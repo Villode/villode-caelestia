@@ -263,7 +263,7 @@ replace_existing_shells() {
 
     if [[ -d "$HOME/.config/hypr" ]]; then
         while IFS= read -r -d '' config_file; do
-            sed -i -E '/noctalia|waybar|hyprpanel|nwg-(panel|dock)|ironbar|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
+            sed -i -E '/noctalia|noctCall|waybar|hyprpanel|nwg-(panel|dock)|ironbar|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
         done < <(find "$HOME/.config/hypr" -type f \
             \( -name '*.conf' -o -name '*.lua' \) -print0)
     fi
