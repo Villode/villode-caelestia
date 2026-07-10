@@ -11,26 +11,29 @@ with_deps=false
 no_start=false
 no_hyprland=false
 offline=false
+no_native_build=false
 
 usage() {
     cat <<'EOF'
 用法：./install.sh [选项]
 
-未指定组件时显示交互式选择菜单。
+Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选择菜单。
 
 选项：
   --all                    安装全部组件
-  --components LIST        安装逗号分隔的组件：zh,dock,desktop,launcher
+  --components LIST        安装逗号分隔的可选组件：zh,dock,desktop,launcher
   --with-deps              允许使用系统包管理器安装缺失依赖
   --no-start               安装后不启动或重启组件
   --no-hyprland            不写入 Hyprland 集成配置
   --offline                仅使用本地缓存，不访问网络
+  --no-native-build        不构建 Fork 的原生插件，仅部署 QML
   -h, --help               显示帮助
 EOF
 }
 
 normalise_component() {
     case "$1" in
+        shell|core|caelestia) echo shell ;;
         zh|chinese|i18n) echo zh ;;
         dock) echo dock ;;
         desktop|wallpaper) echo desktop ;;
@@ -81,6 +84,9 @@ while (($#)); do
         --offline)
             offline=true
             ;;
+        --no-native-build)
+            no_native_build=true
+            ;;
         -h|--help)
             usage
             exit 0
@@ -127,21 +133,6 @@ for command_name in git install; do
     }
 done
 
-if [[ " ${selected[*]} " == *" zh "* && ! -f /etc/xdg/quickshell/caelestia/shell.qml ]]; then
-    if ! $with_deps; then
-        echo "中文化需要先安装 caelestia-shell。请安装后重试，或使用 --with-deps。" >&2
-        exit 69
-    fi
-    if command -v yay >/dev/null 2>&1; then
-        yay -S --needed caelestia-shell caelestia-cli
-    elif command -v paru >/dev/null 2>&1; then
-        paru -S --needed caelestia-shell caelestia-cli
-    else
-        echo "未找到 yay 或 paru，无法自动安装 caelestia-shell。" >&2
-        exit 69
-    fi
-fi
-
 mkdir -p "$cache_home" "$state_home" "$data_home/components"
 
 manifest_row() {
@@ -177,11 +168,17 @@ install_component() {
     source_dir="$(fetch_component "$id" "$repo" "$commit")"
 
     case "$id" in
+        shell)
+            shell_args=(--no-restart)
+            $with_deps && shell_args+=(--with-deps)
+            $no_native_build && shell_args+=(--no-native-build)
+            "$source_dir/install-villode.sh" "${shell_args[@]}"
+            uninstall_source="$source_dir/uninstall-villode.sh"
+            ;;
         zh)
             "$source_dir/install.sh" --no-apply
-            apply_args=()
-            $no_start && apply_args+=(--no-restart)
-            "$HOME/.local/bin/caelestia-zh-apply" "${apply_args[@]}"
+            "$HOME/.local/bin/caelestia-zh-apply" --no-restart
+            uninstall_source="$source_dir/uninstall.sh"
             ;;
         dock|desktop|launcher)
             component_args=()
@@ -189,20 +186,38 @@ install_component() {
             $no_start && component_args+=(--no-start)
             $no_hyprland && component_args+=(--no-hyprland)
             "$source_dir/install.sh" "${component_args[@]}"
+            uninstall_source="$source_dir/uninstall.sh"
             ;;
     esac
 
-    install -Dm755 "$source_dir/uninstall.sh" "$data_home/components/$id/uninstall.sh"
+    install -Dm755 "$uninstall_source" "$data_home/components/$id/uninstall.sh"
     printf '%s\t%s\t%s\n' "$id" "$commit" "$name" > "$state_home/$id.tsv"
 }
 
+if [[ -f "$state_home/zh.tsv" && " ${selected[*]} " != *" zh "* ]]; then
+    echo "检测到现有中文化组件，将在刷新 Shell 后自动重新应用。"
+    selected+=(zh)
+fi
+
+install_component shell
+
 for component in "${selected[@]}"; do
+    [[ "$component" == shell ]] && continue
     install_component "$component"
 done
 
 install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
 install -Dm644 "$manifest" "$data_home/components.tsv"
 
+if ! $no_start; then
+    "$HOME/.local/bin/caelestia" shell -k >/dev/null 2>&1 || true
+    "$HOME/.local/bin/caelestia" shell -d >/tmp/villode-caelestia-install.log 2>&1 || {
+        echo "组件已安装，但 Caelestia 自动启动失败。" >&2
+        echo "日志：/tmp/villode-caelestia-install.log" >&2
+        exit 70
+    }
+fi
+
 echo
-echo "安装完成：${selected[*]}"
+echo "安装完成：shell ${selected[*]}"
 echo "统一卸载命令：villode-caelestia-uninstall"

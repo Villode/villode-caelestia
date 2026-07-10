@@ -2,24 +2,25 @@
 
 基于 [Caelestia Shell](https://github.com/caelestia-dots/shell) 的个人二次开发整合项目。
 
-本仓库提供统一安装入口，各功能仍由独立仓库维护。安装时可以自由选择中文化、Dock、Desktop 和 Launcher，不会把所有组件强制捆绑在一起。
+本仓库提供统一安装入口。Caelestia Shell 本体来自 Villode 的受控 Fork 并始终安装；中文化、Dock、Desktop 和 Launcher 可以自由选择，不会强制捆绑。
 
 ## 组件
 
 | 组件 | 作用 | 独立仓库 |
 | --- | --- | --- |
+| Shell | 固定、测试并由 Villode 跟随适配的 Caelestia 本体 | [caelestia-shell](https://github.com/Villode/caelestia-shell) |
 | 中文化 | Caelestia Shell 简体中文界面 | [caelestia-zh-cn](https://github.com/Villode/caelestia-zh-cn) |
 | Dock | macOS 风格 Dock、实时毛玻璃、拖放固定 | [villode-dock](https://github.com/Villode/villode-dock) |
 | Desktop | 静态图片、视频和 HTML 桌面层 | [villode-desktop](https://github.com/Villode/villode-desktop) |
 | Launcher | macOS 风格应用启动台，与 Dock 拖放联动 | [villode-launcher](https://github.com/Villode/villode-launcher) |
 
-安装器通过 `components.tsv` 锁定每个组件的提交版本，避免上游仓库更新造成不可重复安装。
+安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成中文补丁和组合测试后再更新锁定提交。
 
 ## 前提
 
 - Hyprland / Wayland
 - Git
-- 中文化组件需要已安装 `caelestia-shell` 和 `caelestia-cli`
+- Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
 - 使用 `--with-deps` 时需要 `sudo` 权限
 
 ## 交互式安装
@@ -30,7 +31,7 @@ cd villode-caelestia
 ./install.sh
 ```
 
-安装器会显示组件菜单，可以输入一个或多个编号。
+安装器会始终部署锁定的 Villode Caelestia Shell，并显示可选组件菜单。
 
 ## 一键安装全部组件
 
@@ -48,6 +49,12 @@ cd villode-caelestia
 
 ```bash
 ./install.sh --all --no-start --no-hyprland
+```
+
+调试时可以跳过原生插件构建，继续使用系统已有插件：
+
+```bash
+./install.sh --components shell --no-native-build --no-start
 ```
 
 已经下载过对应版本后，可以离线安装：
@@ -80,7 +87,8 @@ villode-caelestia-uninstall --components dock,launcher --purge
 
 ## 项目边界
 
-- 统一仓库只负责编排安装，不复制各组件源码。
+- Caelestia 本体由 `Villode/caelestia-shell` Fork 完整保存和维护。
+- 统一仓库负责编排并锁定版本，不重复复制组件源码。
 - 每个组件可独立安装、更新和卸载。
 - 不包含本机配置、缓存、日志、密钥或个人素材。
 - Caelestia Shell 的上游代码仍遵循 GPL-3.0-only。

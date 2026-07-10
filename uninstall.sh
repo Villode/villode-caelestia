@@ -12,7 +12,7 @@ usage() {
 
 选项：
   --all                    卸载全部已安装组件
-  --components LIST        卸载逗号分隔的组件：zh,dock,desktop,launcher
+  --components LIST        卸载逗号分隔的组件：shell,zh,dock,desktop,launcher
   --purge                  同时删除组件的用户数据
   -h, --help               显示帮助
 EOF
@@ -24,7 +24,7 @@ add_components() {
     for item in "${items[@]}"; do
         item="${item//[[:space:]]/}"
         case "$item" in
-            zh|dock|desktop|launcher) selected+=("$item") ;;
+            shell|zh|dock|desktop|launcher) selected+=("$item") ;;
             *) echo "未知组件：$item" >&2; exit 64 ;;
         esac
     done
@@ -32,7 +32,7 @@ add_components() {
 
 while (($#)); do
     case "$1" in
-        --all) selected=(zh dock desktop launcher) ;;
+        --all) selected=(zh dock desktop launcher shell) ;;
         --components)
             [[ $# -ge 2 ]] || { echo "--components 缺少参数" >&2; exit 64; }
             add_components "$2"
