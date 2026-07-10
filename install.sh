@@ -10,11 +10,12 @@ selected=()
 with_deps=true
 no_start=false
 no_hyprland=false
+install_session=true
 offline=false
 no_native_build=false
 # A complete Villode installation owns the desktop-shell role. Existing shells
 # are backed up and removed by default; --keep-existing is the explicit opt-out.
-replace_existing=yes
+replace_existing=no
 
 usage() {
     cat <<'EOF'
@@ -29,6 +30,7 @@ Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选�
   --no-deps                不安装缺失的系统依赖
   --no-start               安装后不启动或重启组件
   --no-hyprland            不写入 Hyprland 集成配置
+  --no-session             不安装独立 Villode Hyprland 登录会话
   --offline                仅使用本地缓存，不访问网络
   --no-native-build        不构建 Fork 的原生插件，仅部署 QML
   --replace-existing       备份并移除现有桌面壳（默认）
@@ -89,6 +91,9 @@ while (($#)); do
             ;;
         --no-hyprland)
             no_hyprland=true
+            ;;
+        --no-session)
+            install_session=false
             ;;
         --offline)
             offline=true
@@ -176,6 +181,19 @@ bootstrap_install_tools() {
 }
 
 bootstrap_install_tools
+
+install_session_dependencies() {
+    $install_session || return
+    $with_deps || return
+    if command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --needed --noconfirm \
+            hyprland xdg-desktop-portal xdg-desktop-portal-hyprland \
+            xdg-desktop-portal-gtk polkit-gnome pipewire wireplumber \
+            networkmanager
+    fi
+}
+
+install_session_dependencies
 
 detect_existing_shells() {
     detected_shell_packages=()
@@ -361,7 +379,9 @@ install_component() {
             component_args=()
             $with_deps && component_args+=(--with-deps)
             $no_start && component_args+=(--no-start)
-            $no_hyprland && component_args+=(--no-hyprland)
+            if $no_hyprland || $install_session; then
+                component_args+=(--no-hyprland)
+            fi
             "$source_dir/install.sh" "${component_args[@]}"
             uninstall_source="$source_dir/uninstall.sh"
             ;;
@@ -377,6 +397,7 @@ configure_hyprland_lua_autostart() {
     local lua_module="$hypr_dir/config/villode-suite.lua"
 
     $no_hyprland && return
+    $install_session && return
     [[ -f "$lua_main" ]] || return
 
     mkdir -p "$(dirname "$lua_module")"
@@ -401,6 +422,26 @@ EOF
     fi
 }
 
+install_villode_session() {
+    local session_config="$HOME/.config/villode-hyprland/hyprland.conf"
+    $install_session || return
+
+    install -Dm644 "$repo_dir/session/villode-hyprland.conf" "$session_config"
+    sudo install -Dm755 "$repo_dir/session/start-villode-hyprland" \
+        /usr/local/bin/start-villode-hyprland
+    sudo install -Dm644 "$repo_dir/session/villode-hyprland.desktop" \
+        /usr/local/share/wayland-sessions/villode-hyprland.desktop
+
+    # Remove integration written by older releases. The dedicated session must
+    # not depend on, or modify, the user's original Hyprland/Noctalia session.
+    rm -f "$HOME/.config/hypr/config/villode-suite.lua" \
+        "$HOME/.config/hypr/config/villode-launcher.lua"
+    if [[ -f "$HOME/.config/hypr/hyprland.lua" ]]; then
+        sed -i '/Villode desktop suite/Id; /Villode Launcher/Id; /require("config\.villode-suite")/d; /require("config\.villode-launcher")/d' \
+            "$HOME/.config/hypr/hyprland.lua"
+    fi
+}
+
 if [[ -f "$state_home/zh.tsv" && " ${selected[*]} " != *" zh "* ]]; then
     echo "检测到现有中文化组件，将在刷新 Shell 后自动重新应用。"
     selected+=(zh)
@@ -415,6 +456,7 @@ for component in zh desktop launcher dock; do
 done
 
 configure_hyprland_lua_autostart
+install_villode_session
 
 install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
 install -Dm644 "$manifest" "$data_home/components.tsv"

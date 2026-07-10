@@ -29,11 +29,23 @@ cd villode-caelestia
 
 安装器默认会自动备份、停止并卸载检测到的冲突桌面壳。它不使用递归孤儿依赖清理，不应删除文件管理器、钥匙环、GVFS 或桌面门户。
 
-## 4. 注销并重新登录
+## 4. 注销并进入独立会话
 
-安装完成后注销 Hyprland 会话并重新登录。这一步用于验证全新自启动，不要只在当前会话中观察。
+安装完成后注销当前会话，在 SDDM 会话选择器中选择 `Villode Hyprland` 再登录。
+该会话必须使用 `~/.config/villode-hyprland/hyprland.conf`，不应加载 `~/.config/hypr`。
 
-## 5. 验收旧桌面已移除
+```bash
+pgrep -af 'start-villode-hyprland|Hyprland.*villode-hyprland'
+```
+
+## 5. 可选：验收旧桌面清理
+
+先在 `Villode Hyprland` 会话确认界面和输入正常，然后在终端执行：
+
+```bash
+cd ~/villode-caelestia
+./install.sh --all --replace-existing
+```
 
 ```bash
 pacman -Qq | grep -Ei '^((cachyos-.*-)?noctalia|waybar|hyprpanel|aylurs-gtk-shell|eww|nwg-(panel|dock|dock-hyprland)|ironbar)$' || true

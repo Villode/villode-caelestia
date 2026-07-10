@@ -40,15 +40,30 @@ cd villode-caelestia
 ./install.sh --all
 ```
 
-完整安装默认自动识别 Noctalia、Waybar、HyprPanel、AGS、Eww、Nwg Panel/Dock 和 Ironbar。
+完整安装会创建独立的 `Villode Hyprland` 登录会话和
+`~/.config/villode-hyprland` 配置目录，不读取用户现有的 Noctalia/CachyOS Hyprland 配置。
+首次安装默认保留旧会话作为救援入口；注销后在 SDDM 中选择 `Villode Hyprland`。
+
+确认独立会话正常后，可以自动识别并替换 Noctalia、Waybar、HyprPanel、AGS、Eww、Nwg Panel/Dock 和 Ironbar：
+
+```bash
+./install.sh --all --replace-existing
+```
+
 替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、仅移除冲突软件包，
 并把 `noctalia-qs` 替换为标准 `quickshell-git`。备份位置会记录在
 `~/.local/state/villode-caelestia/desktop-migration.txt`。
 
-如果需要保留现有桌面壳：
+默认行为等同于：
 
 ```bash
 ./install.sh --all --keep-existing
+```
+
+如果不需要独立登录会话，仅安装组件：
+
+```bash
+./install.sh --all --no-session
 ```
 
 只安装指定组件：
@@ -112,6 +127,7 @@ villode-caelestia-uninstall --components dock,launcher --purge
 - 统一仓库负责编排并锁定版本，不重复复制组件源码。
 - 每个组件可独立安装、更新和卸载。
 - 完整安装会先安装 Launcher、最后安装并刷新 Dock，确保启动台入口立即显示。
+- `Villode Hyprland` 会话使用项目自己的窗口规则、快捷键和自启动，不受旧桌面配置影响。
 - 不包含本机配置、缓存、日志、密钥或个人素材。
 - Caelestia Shell 的上游代码仍遵循 GPL-3.0-only。
 

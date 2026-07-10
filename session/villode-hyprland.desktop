@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Villode Hyprland
+Name[zh_CN]=Villode Hyprland 桌面
+Comment=Clean and reproducible Villode desktop session
+Comment[zh_CN]=独立、干净且可复现的 Villode 桌面会话
+Exec=/usr/local/bin/start-villode-hyprland
+Type=Application
+DesktopNames=Hyprland;Villode-Hyprland

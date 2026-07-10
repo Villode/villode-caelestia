@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}/villode-hyprland/hyprland.conf"
+if [[ ! -r "$config" ]]; then
+    echo "Villode Hyprland configuration not found: $config" >&2
+    exit 66
+fi
+
+export XDG_CURRENT_DESKTOP=Hyprland
+export XDG_SESSION_DESKTOP=Villode-Hyprland
+export XDG_SESSION_TYPE=wayland
+export QT_QPA_PLATFORM='wayland;xcb'
+export MOZ_ENABLE_WAYLAND=1
+
+exec start-hyprland -- --config "$config"
