@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+manifest="$repo_dir/components.tsv"
+cache_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/sources"
+state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}/villode-caelestia"
+selected=()
+with_deps=false
+no_start=false
+no_hyprland=false
+offline=false
+
+usage() {
+    cat <<'EOF'
+用法：./install.sh [选项]
+
+未指定组件时显示交互式选择菜单。
+
+选项：
+  --all                    安装全部组件
+  --components LIST        安装逗号分隔的组件：zh,dock,desktop,launcher
+  --with-deps              允许使用系统包管理器安装缺失依赖
+  --no-start               安装后不启动或重启组件
+  --no-hyprland            不写入 Hyprland 集成配置
+  --offline                仅使用本地缓存，不访问网络
+  -h, --help               显示帮助
+EOF
+}
+
+normalise_component() {
+    case "$1" in
+        zh|chinese|i18n) echo zh ;;
+        dock) echo dock ;;
+        desktop|wallpaper) echo desktop ;;
+        launcher|launchpad) echo launcher ;;
+        *) return 1 ;;
+    esac
+}
+
+add_components() {
+    local raw item component
+    raw="$1"
+    IFS=',' read -ra items <<< "$raw"
+    for item in "${items[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ -n "$item" ]] || continue
+        if ! component="$(normalise_component "$item")"; then
+            echo "未知组件：$item" >&2
+            exit 64
+        fi
+        if [[ " ${selected[*]} " != *" $component "* ]]; then
+            selected+=("$component")
+        fi
+    done
+}
+
+while (($#)); do
+    case "$1" in
+        --all)
+            selected=(zh dock desktop launcher)
+            ;;
+        --components)
+            [[ $# -ge 2 ]] || { echo "--components 缺少参数" >&2; exit 64; }
+            add_components "$2"
+            shift
+            ;;
+        --components=*)
+            add_components "${1#*=}"
+            ;;
+        --with-deps)
+            with_deps=true
+            ;;
+        --no-start)
+            no_start=true
+            ;;
+        --no-hyprland)
+            no_hyprland=true
+            ;;
+        --offline)
+            offline=true
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "未知选项：$1" >&2
+            usage >&2
+            exit 64
+            ;;
+    esac
+    shift
+done
+
+if ((${#selected[@]} == 0)); then
+    if [[ ! -t 0 ]]; then
+        echo "非交互环境中请使用 --all 或 --components。" >&2
+        exit 64
+    fi
+    cat <<'EOF'
+选择要安装的组件：
+  1. Caelestia 简体中文
+  2. Villode Dock
+  3. Villode Desktop
+  4. Villode Launcher
+  a. 全部组件
+EOF
+    read -r -p "输入编号（可用逗号分隔，默认 a）：" answer
+    answer="${answer:-a}"
+    if [[ "$answer" == "a" || "$answer" == "A" ]]; then
+        selected=(zh dock desktop launcher)
+    else
+        answer="${answer//1/zh}"
+        answer="${answer//2/dock}"
+        answer="${answer//3/desktop}"
+        answer="${answer//4/launcher}"
+        add_components "$answer"
+    fi
+fi
+
+for command_name in git install; do
+    command -v "$command_name" >/dev/null 2>&1 || {
+        echo "缺少依赖：$command_name" >&2
+        exit 69
+    }
+done
+
+if [[ " ${selected[*]} " == *" zh "* && ! -f /etc/xdg/quickshell/caelestia/shell.qml ]]; then
+    if ! $with_deps; then
+        echo "中文化需要先安装 caelestia-shell。请安装后重试，或使用 --with-deps。" >&2
+        exit 69
+    fi
+    if command -v yay >/dev/null 2>&1; then
+        yay -S --needed caelestia-shell caelestia-cli
+    elif command -v paru >/dev/null 2>&1; then
+        paru -S --needed caelestia-shell caelestia-cli
+    else
+        echo "未找到 yay 或 paru，无法自动安装 caelestia-shell。" >&2
+        exit 69
+    fi
+fi
+
+mkdir -p "$cache_home" "$state_home" "$data_home/components"
+
+manifest_row() {
+    awk -F '\t' -v id="$1" '$1 == id { print; found=1; exit } END { if (!found) exit 1 }' "$manifest"
+}
+
+fetch_component() {
+    local id="$1" repo="$2" commit="$3" source_dir="$cache_home/$id"
+    if [[ -d "$source_dir/.git" ]] &&
+       [[ "$(git -C "$source_dir" rev-parse HEAD 2>/dev/null || true)" == "$commit" ]]; then
+        printf '%s\n' "$source_dir"
+        return
+    fi
+    if $offline; then
+        echo "离线缓存缺少组件或版本不匹配：$id" >&2
+        return 69
+    fi
+    rm -rf "$source_dir"
+    mkdir -p "$source_dir"
+    git -C "$source_dir" init -q
+    git -C "$source_dir" remote add origin "$repo"
+    git -C "$source_dir" fetch -q --depth=1 origin "$commit"
+    git -C "$source_dir" checkout -q --detach FETCH_HEAD
+    printf '%s\n' "$source_dir"
+}
+
+install_component() {
+    local id="$1" row repo commit name source_dir
+    row="$(manifest_row "$id")"
+    IFS=$'\t' read -r _ repo commit name <<< "$row"
+    echo
+    echo "==> 安装 $name"
+    source_dir="$(fetch_component "$id" "$repo" "$commit")"
+
+    case "$id" in
+        zh)
+            "$source_dir/install.sh" --no-apply
+            apply_args=()
+            $no_start && apply_args+=(--no-restart)
+            "$HOME/.local/bin/caelestia-zh-apply" "${apply_args[@]}"
+            ;;
+        dock|desktop|launcher)
+            component_args=()
+            $with_deps && component_args+=(--with-deps)
+            $no_start && component_args+=(--no-start)
+            $no_hyprland && component_args+=(--no-hyprland)
+            "$source_dir/install.sh" "${component_args[@]}"
+            ;;
+    esac
+
+    install -Dm755 "$source_dir/uninstall.sh" "$data_home/components/$id/uninstall.sh"
+    printf '%s\t%s\t%s\n' "$id" "$commit" "$name" > "$state_home/$id.tsv"
+}
+
+for component in "${selected[@]}"; do
+    install_component "$component"
+done
+
+install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
+install -Dm644 "$manifest" "$data_home/components.tsv"
+
+echo
+echo "安装完成：${selected[*]}"
+echo "统一卸载命令：villode-caelestia-uninstall"
