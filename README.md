@@ -37,7 +37,23 @@ cd villode-caelestia
 ## 一键安装全部组件
 
 ```bash
-./install.sh --all
+  ./install.sh --all
+```
+
+完整替换 Noctalia、Waybar 等现有桌面壳：
+
+```bash
+./install.sh --all --replace-existing
+```
+
+替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、移除冲突软件包，
+并把 `noctalia-qs` 替换为标准 `quickshell-git`。备份位置会记录在
+`~/.local/state/villode-caelestia/desktop-migration.txt`。
+
+如果需要保留现有桌面壳：
+
+```bash
+./install.sh --all --keep-existing
 ```
 
 只安装指定组件：
@@ -97,6 +113,7 @@ villode-caelestia-uninstall --components dock,launcher --purge
 - Caelestia 本体由 `Villode/caelestia-shell` Fork 完整保存和维护。
 - 统一仓库负责编排并锁定版本，不重复复制组件源码。
 - 每个组件可独立安装、更新和卸载。
+- 完整安装会先安装 Launcher、最后安装并刷新 Dock，确保启动台入口立即显示。
 - 不包含本机配置、缓存、日志、密钥或个人素材。
 - Caelestia Shell 的上游代码仍遵循 GPL-3.0-only。
 

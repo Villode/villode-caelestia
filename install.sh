@@ -12,6 +12,7 @@ no_start=false
 no_hyprland=false
 offline=false
 no_native_build=false
+replace_existing=ask
 
 usage() {
     cat <<'EOF'
@@ -28,6 +29,8 @@ Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选�
   --no-hyprland            不写入 Hyprland 集成配置
   --offline                仅使用本地缓存，不访问网络
   --no-native-build        不构建 Fork 的原生插件，仅部署 QML
+  --replace-existing       备份并移除 Noctalia/Waybar 等现有桌面壳
+  --keep-existing          保留检测到的现有桌面壳
   -h, --help               显示帮助
 EOF
 }
@@ -90,6 +93,12 @@ while (($#)); do
             ;;
         --no-native-build)
             no_native_build=true
+            ;;
+        --replace-existing)
+            replace_existing=yes
+            ;;
+        --keep-existing)
+            replace_existing=no
             ;;
         -h|--help)
             usage
@@ -166,6 +175,111 @@ bootstrap_install_tools() {
 
 bootstrap_install_tools
 
+detect_existing_shells() {
+    detected_shell_packages=()
+    detected_shell_paths=()
+    local package_name path
+
+    if command -v pacman >/dev/null 2>&1; then
+        for package_name in \
+            cachyos-niri-noctalia noctalia-shell noctalia-qs \
+            waybar hyprpanel aylurs-gtk-shell eww; do
+            if pacman -Q "$package_name" >/dev/null 2>&1; then
+                detected_shell_packages+=("$package_name")
+            fi
+        done
+    fi
+
+    for path in \
+        "$HOME/.config/noctalia" \
+        "$HOME/.config/quickshell/noctalia" \
+        "$HOME/.config/quickshell/noctalia-shell" \
+        "$HOME/.config/waybar" \
+        "$HOME/.config/ags" \
+        "$HOME/.config/hyprpanel" \
+        "$HOME/.config/eww"; do
+        if [[ -e "$path" ]]; then
+            detected_shell_paths+=("$path")
+        fi
+    done
+    return 0
+}
+
+replace_existing_shells() {
+    local backup_dir package_name path config_file
+    detect_existing_shells
+    if ((${#detected_shell_packages[@]} == 0 && ${#detected_shell_paths[@]} == 0)); then
+        echo "未检测到冲突的桌面壳。"
+        return
+    fi
+
+    echo "检测到现有桌面壳："
+    ((${#detected_shell_packages[@]})) && printf '  软件包：%s\n' "${detected_shell_packages[*]}"
+    ((${#detected_shell_paths[@]})) && printf '  配置：%s\n' "${detected_shell_paths[*]}"
+
+    if [[ "$replace_existing" == ask ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "非交互环境请使用 --replace-existing 或 --keep-existing。" >&2
+            exit 64
+        fi
+        read -r -p "是否备份并替换为 Villode Caelestia？[Y/n] " answer
+        case "${answer:-y}" in
+            y|Y|yes|YES) replace_existing=yes ;;
+            *) replace_existing=no ;;
+        esac
+    fi
+
+    if [[ "$replace_existing" == no ]]; then
+        echo "保留现有桌面壳；同时运行多个 Shell 可能出现面板、通知和快捷键冲突。"
+        return
+    fi
+
+    backup_dir="$state_home/migration-backups/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$backup_dir/config"
+    if [[ -d "$HOME/.config/hypr" ]]; then
+        cp -a "$HOME/.config/hypr" "$backup_dir/config/hypr"
+    fi
+    for path in "${detected_shell_paths[@]}"; do
+        cp -a "$path" "$backup_dir/config/"
+        rm -rf "$path"
+    done
+
+    qs -c noctalia-shell kill >/dev/null 2>&1 || true
+    qs -c noctalia kill >/dev/null 2>&1 || true
+    pkill -x waybar >/dev/null 2>&1 || true
+
+    if [[ -d "$HOME/.config/hypr" ]]; then
+        while IFS= read -r -d '' config_file; do
+            sed -i -E '/noctalia|waybar|hyprpanel|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
+        done < <(find "$HOME/.config/hypr" -type f -name '*.conf' -print0)
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
+        removable_packages=()
+        for package_name in \
+            cachyos-niri-noctalia noctalia-shell \
+            waybar hyprpanel aylurs-gtk-shell eww; do
+            pacman -Q "$package_name" >/dev/null 2>&1 && removable_packages+=("$package_name")
+        done
+        if ((${#removable_packages[@]})); then
+            sudo pacman -Rns --noconfirm "${removable_packages[@]}"
+        fi
+        if pacman -Q noctalia-qs >/dev/null 2>&1; then
+            if command -v yay >/dev/null 2>&1; then
+                yay -S --needed --noconfirm quickshell-git
+            else
+                paru -S --needed --noconfirm quickshell-git
+            fi
+        fi
+    fi
+
+    printf 'Desktop shell migration completed at %s\nBackup: %s\n' \
+        "$(date --iso-8601=seconds)" "$backup_dir" > "$state_home/desktop-migration.txt"
+    echo "旧桌面配置已备份到：$backup_dir"
+}
+
+replace_existing_shells
+
 for command_name in git install; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "缺少依赖：$command_name" >&2
@@ -241,9 +355,10 @@ fi
 
 install_component shell
 
-for component in "${selected[@]}"; do
-    [[ "$component" == shell ]] && continue
-    install_component "$component"
+for component in zh desktop launcher dock; do
+    if [[ " ${selected[*]} " == *" $component "* ]]; then
+        install_component "$component"
+    fi
 done
 
 install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
@@ -256,6 +371,9 @@ if ! $no_start; then
         echo "日志：/tmp/villode-caelestia-install.log" >&2
         exit 70
     }
+    if [[ " ${selected[*]} " == *" dock "* ]]; then
+        "$HOME/.local/bin/villode-dock" --reload
+    fi
 fi
 
 echo
