@@ -84,6 +84,7 @@ done
 if ! find "$state_home" -maxdepth 1 -type f -name '*.tsv' -print -quit 2>/dev/null | grep -q .; then
     rm -rf "$HOME/.config/villode-hyprland"
     sudo rm -f /usr/local/bin/start-villode-hyprland \
+        /usr/local/bin/villode-hyprland-compositor \
         /usr/local/share/wayland-sessions/villode-hyprland.desktop
     rm -f "$HOME/.config/hypr/config/villode-suite.lua"
     if [[ -f "$HOME/.config/hypr/hyprland.lua" ]]; then

@@ -189,7 +189,7 @@ install_session_dependencies() {
         sudo pacman -S --needed --noconfirm \
             hyprland xdg-desktop-portal xdg-desktop-portal-hyprland \
             xdg-desktop-portal-gtk polkit-gnome pipewire wireplumber \
-            networkmanager
+            networkmanager uwsm
     fi
 }
 
@@ -429,6 +429,8 @@ install_villode_session() {
     install -Dm644 "$repo_dir/session/villode-hyprland.conf" "$session_config"
     sudo install -Dm755 "$repo_dir/session/start-villode-hyprland" \
         /usr/local/bin/start-villode-hyprland
+    sudo install -Dm755 "$repo_dir/session/villode-hyprland-compositor" \
+        /usr/local/bin/villode-hyprland-compositor
     sudo install -Dm644 "$repo_dir/session/villode-hyprland.desktop" \
         /usr/local/share/wayland-sessions/villode-hyprland.desktop
 
@@ -440,6 +442,23 @@ install_villode_session() {
         sed -i '/Villode desktop suite/Id; /Villode Launcher/Id; /require("config\.villode-suite")/d; /require("config\.villode-launcher")/d' \
             "$HOME/.config/hypr/hyprland.lua"
     fi
+
+    # Caelestia's generic logout action terminates login1 from the outside,
+    # which looks like a crashed SDDM helper. Stop the UWSM-managed graphical
+    # session in order so control returns cleanly to the display manager.
+    python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".config/caelestia/shell.json"
+path.parent.mkdir(parents=True, exist_ok=True)
+try:
+    data = json.loads(path.read_text()) if path.exists() else {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+data.setdefault("session", {}).setdefault("commands", {})["logout"] = ["uwsm", "stop"]
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+PY
 }
 
 if [[ -f "$state_home/zh.tsv" && " ${selected[*]} " != *" zh "* ]]; then

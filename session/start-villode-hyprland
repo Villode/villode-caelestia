@@ -13,4 +13,10 @@ export XDG_SESSION_TYPE=wayland
 export QT_QPA_PLATFORM='wayland;xcb'
 export MOZ_ENABLE_WAYLAND=1
 
-exec start-hyprland -- --config "$config"
+# UWSM binds the compositor, portals and user services into one ordered
+# systemd session. It still launches Hyprland through the recommended watchdog,
+# while `uwsm stop` provides a clean logout path for SDDM.
+exec uwsm start -e \
+    -D Hyprland:Villode-Hyprland \
+    -N "Villode Hyprland" \
+    -F /usr/local/bin/villode-hyprland-compositor

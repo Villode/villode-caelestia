@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}/villode-hyprland/hyprland.conf"
+exec start-hyprland -- --config "$config"
