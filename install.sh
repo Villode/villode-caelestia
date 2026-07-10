@@ -373,6 +373,10 @@ install -Dm644 "$manifest" "$data_home/components.tsv"
 
 if ! $no_start; then
     "$HOME/.local/bin/caelestia" shell -k >/dev/null 2>&1 || true
+    # The CLI can leave an older detached Quickshell instance behind after an
+    # upgrade. Stop only Caelestia's own instances before starting one fresh
+    # process, otherwise duplicate panels keep running and waste resources.
+    pkill -u "$UID" -f '^qs -c caelestia([[:space:]]|$)' >/dev/null 2>&1 || true
     "$HOME/.local/bin/caelestia" shell -d >/tmp/villode-caelestia-install.log 2>&1 || {
         echo "组件已安装，但 Caelestia 自动启动失败。" >&2
         echo "日志：/tmp/villode-caelestia-install.log" >&2
