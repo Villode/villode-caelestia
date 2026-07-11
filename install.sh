@@ -16,7 +16,7 @@ no_native_build=false
 skip_shell=false
 # A complete Villode installation owns the desktop-shell role. Existing shells
 # are backed up and removed by default; --keep-existing is the explicit opt-out.
-replace_existing=no
+replace_existing=yes
 
 usage() {
     cat <<'EOF'
