@@ -247,6 +247,10 @@ bootstrap_build_tools() {
 }
 
 install_session_dependencies() {
+    # --skip-shell is used by the updater for an already installed suite.
+    # Session prerequisites were handled by the original full installation;
+    # a Dock/Launcher/Desktop/translation-only update must not prompt for sudo.
+    $skip_shell && return 0
     $install_session || return 0
     $with_deps || return 0
     $offline && return
@@ -698,6 +702,10 @@ PY
 
 install_villode_session() {
     local session_config="$HOME/.config/villode-hyprland/hyprland.conf" legacy_managed=no
+    # A component-only updater run does not change the installed component
+    # set, so the existing independent session needs neither root writes nor
+    # logout-command changes.
+    $skip_shell && return 0
     $install_session || return 0
     any_session_component_available || return 0
 
