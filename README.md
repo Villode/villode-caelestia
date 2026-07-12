@@ -25,7 +25,7 @@
 - Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
 - 默认自动检测并补齐依赖，安装系统包时需要 `sudo` 权限
 - 独立会话由 UWSM 管理，Caelestia 的注销按钮会执行 `uwsm stop` 有序返回登录管理器
-- Arch 上自动补齐独立会话依赖时会安装 `foot`，用于 Super+Return 和终端内更新流程
+- Arch 上自动补齐独立会话依赖时会安装 `alacritty`；Super+Return 和 Dock 会共同读取 Caelestia“默认应用”中的终端设置
 - Arch 系统没有 `yay`/`paru` 时，会自动安装 `base-devel`、`git` 和 `yay-bin`
 
 ## 交互式安装

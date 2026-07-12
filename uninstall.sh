@@ -266,7 +266,9 @@ if ! any_component_installed; then
     rm -rf "$data_home"
     rm -f "$state_home/install-options"
     rm -f "$HOME/.local/bin/villode-caelestia-uninstall" \
-        "$HOME/.local/bin/villode-caelestia-update"
+        "$HOME/.local/bin/villode-caelestia-update" \
+        "$HOME/.local/bin/villode-terminal" \
+        "$HOME/.local/bin/villode-explorer"
     # The outer flock process still owns the unlinked inode until this script
     # exits, so removing the pathname here cannot release protection early.
     rm -f "$state_home/operation.lock"

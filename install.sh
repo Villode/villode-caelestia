@@ -258,7 +258,7 @@ install_session_dependencies() {
         sudo pacman -S --needed --noconfirm \
             hyprland xdg-desktop-portal xdg-desktop-portal-hyprland \
             xdg-desktop-portal-gtk polkit-gnome pipewire wireplumber \
-            networkmanager uwsm foot
+            networkmanager uwsm alacritty
     fi
 }
 
@@ -290,10 +290,10 @@ install_language_dependencies() {
 validate_session_terminal() {
     local terminal
     $install_session || return 0
-    for terminal in kitty foot alacritty xterm; do
+    for terminal in alacritty foot xterm; do
         command -v "$terminal" >/dev/null 2>&1 && return
     done
-    echo "独立会话需要终端（推荐 foot）；请安装后重试，或使用 --with-deps。" >&2
+    echo "独立会话需要终端（推荐 Alacritty）；请安装后重试，或使用 --with-deps。" >&2
     return 69
 }
 
@@ -756,15 +756,20 @@ install_release_files() {
         install -Dm755 "$repo_dir/update.sh" "$release_dir/update.sh"
         install -Dm644 "$manifest" "$release_dir/components.tsv"
         for file in villode-hyprland.conf start-villode-hyprland \
-            villode-hyprland-compositor villode-hyprland.desktop; do
+            villode-hyprland-compositor villode-hyprland.desktop \
+            villode-terminal villode-explorer; do
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
         chmod 755 "$release_dir/session/start-villode-hyprland" \
-            "$release_dir/session/villode-hyprland-compositor"
+            "$release_dir/session/villode-hyprland-compositor" \
+            "$release_dir/session/villode-terminal" \
+            "$release_dir/session/villode-explorer"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
     install -Dm755 "$repo_dir/update.sh" "$HOME/.local/bin/villode-caelestia-update"
+    install -Dm755 "$repo_dir/session/villode-terminal" "$HOME/.local/bin/villode-terminal"
+    install -Dm755 "$repo_dir/session/villode-explorer" "$HOME/.local/bin/villode-explorer"
     install -Dm644 "$manifest" "$data_home/components.tsv"
 }
 
