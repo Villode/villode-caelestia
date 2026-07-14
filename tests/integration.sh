@@ -268,10 +268,114 @@ assert json.load(open(sys.argv[1]))["session"]["commands"]["logout"] == ["loginc
 PY
 }
 
+test_restart_shell_retries_already_running() {
+    local root="$work/restart-shell" fake log pid_file
+    root="$work/restart-shell"
+    fake="$root/fake-bin"
+    log="$root/install.log"
+    pid_file="$root/fake-shell.pid"
+    mkdir -p "$fake" "$root/home/.local/bin" "$root/home/.local/lib/caelestia/bin" "$root/state"
+
+    # Extract only the restart helpers from install.sh so we can unit-test the
+    # already-running race without running a full component install.
+    # Copy the restart helper block up to, but not including, prepare_sources.
+    awk '
+        /^caelestia_cli\(\)/ {keep=1}
+        keep && /^prepare_sources$/ {exit}
+        keep {print}
+    ' "$repo_dir/install.sh" > "$root/helpers.sh"
+    grep -q 'restart_caelestia_shell' "$root/helpers.sh" || fail '未提取到 restart helpers'
+
+    cat > "$fake/caelestia" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+state_dir="${VILLODE_TEST_STATE:?}"
+log="${VILLODE_TEST_LOG:?}"
+pid_file="${VILLODE_TEST_PID:?}"
+cmd="${1:-}"
+sub="${2:-}"
+if [[ "$cmd" == shell && "$sub" == -k ]]; then
+    if [[ -f "$pid_file" ]]; then
+        kill "$(cat "$pid_file")" 2>/dev/null || true
+        rm -f "$pid_file"
+    fi
+    exit 0
+fi
+if [[ "$cmd" == shell && "$sub" == -d ]]; then
+    attempt_file="$state_dir/start-attempt"
+    attempt=0
+    [[ -f "$attempt_file" ]] && attempt="$(cat "$attempt_file")"
+    attempt=$((attempt + 1))
+    printf '%s\n' "$attempt" > "$attempt_file"
+    if (( attempt == 1 )); then
+        # First start pretends another instance still owns the config. The old
+        # installer treated this as success and left the desktop without a shell.
+        # Write only to stdout; the restart helper owns the install log.
+        printf '%s\n' 'An instance of this configuration is already running.'
+        exit 0
+    fi
+    # Second start launches a long-lived process and records its pid. qs list
+    # will report this as the live Caelestia instance.
+    sleep 3600 &
+    echo $! > "$pid_file"
+    printf '%s\n' 'started'
+    exit 0
+fi
+echo "unexpected caelestia args: $*" >&2
+exit 64
+SH
+    chmod +x "$fake/caelestia"
+
+    cat > "$fake/qs" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+pid_file="${VILLODE_TEST_PID:?}"
+if [[ "${1:-}" == -c && "${2:-}" == caelestia && "${3:-}" == list ]]; then
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        pid="$(cat "$pid_file")"
+        printf '[{"config_path":"/tmp/caelestia/shell.qml","id":"test","pid":%s,"shell_id":"test"}]\n' "$pid"
+    else
+        printf '[]\n'
+    fi
+    exit 0
+fi
+if [[ "${1:-}" == -c && "${2:-}" == caelestia && "${3:-}" == kill ]]; then
+    if [[ -f "$pid_file" ]]; then
+        kill "$(cat "$pid_file")" 2>/dev/null || true
+        rm -f "$pid_file"
+    fi
+    exit 0
+fi
+exit 0
+SH
+    chmod +x "$fake/qs"
+    install -m755 "$fake/caelestia" "$root/home/.local/bin/caelestia"
+    install -m755 "$fake/qs" "$root/home/.local/lib/caelestia/bin/qs"
+
+    HOME="$root/home" \
+    PATH="$fake:$PATH" \
+    VILLODE_TEST_STATE="$root/state" \
+    VILLODE_TEST_LOG="$log" \
+    VILLODE_TEST_PID="$pid_file" \
+    bash -c '
+        set -euo pipefail
+        # shellcheck disable=SC1091
+        source "'"$root"'/helpers.sh"
+        restart_caelestia_shell "'"$log"'"
+    ' || fail 'restart_caelestia_shell 应在 already-running 后重试成功'
+
+    [[ -f "$pid_file" ]] || fail '未启动伪 shell 进程'
+    kill -0 "$(cat "$pid_file")" 2>/dev/null || fail '伪 shell 进程不在运行'
+    grep -q 'restart attempt 1: start reported an existing instance' "$log" \
+        || fail '未记录 already-running 重试'
+    kill "$(cat "$pid_file")" 2>/dev/null || true
+}
+
 test_update_repairs_real_revision
 test_update_reuses_install_options
 test_preflight_failure_preserves_existing_desktop
 test_offline_no_hyprland_installs_successfully
 test_operation_lock_rejects_concurrent_update
 test_partial_uninstall_rebuilds_session
+test_restart_shell_retries_already_running
 echo 'integration tests: ok'

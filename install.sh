@@ -806,6 +806,144 @@ publish_component_states() {
     done
 }
 
+caelestia_cli() {
+    if [[ -x "$HOME/.local/bin/caelestia" ]]; then
+        printf '%s\n' "$HOME/.local/bin/caelestia"
+    else
+        printf '%s\n' caelestia
+    fi
+}
+
+quickshell_cli() {
+    # Prefer the Villode qs wrapper so process naming matches the installed
+    # runtime. Fall back to PATH when the wrapper is not present yet.
+    if [[ -x "$HOME/.local/lib/caelestia/bin/qs" ]]; then
+        printf '%s\n' "$HOME/.local/lib/caelestia/bin/qs"
+    elif command -v qs >/dev/null 2>&1; then
+        command -v qs
+    else
+        return 1
+    fi
+}
+
+# True when a live Caelestia Quickshell process is present. Dead instance
+# runtime dirs under $XDG_RUNTIME_DIR/quickshell must not count.
+caelestia_shell_is_running() {
+    local qs out pid cmdline
+    if qs="$(quickshell_cli 2>/dev/null)"; then
+        out="$("$qs" -c caelestia list --json --any-display 2>/dev/null || true)"
+        if [[ "$out" == \[* && "$out" != "[]" ]] && grep -q '"pid"[[:space:]]*:' <<<"$out"; then
+            return 0
+        fi
+    fi
+
+    # The qs wrapper re-execs to /usr/bin/quickshell, so the live process name
+    # is usually "quickshell", not "qs -c caelestia".
+    while IFS= read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *'-c caelestia'* ||
+              "$cmdline" == *'--config caelestia'* ||
+              "$cmdline" == *'/quickshell/caelestia'* ]]; then
+            return 0
+        fi
+    done < <(pgrep -u "$UID" -x quickshell 2>/dev/null || true)
+    while IFS= read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *'-c caelestia'* ||
+              "$cmdline" == *'--config caelestia'* ]]; then
+            return 0
+        fi
+    done < <(pgrep -u "$UID" -x qs 2>/dev/null || true)
+    return 1
+}
+
+stop_caelestia_shell() {
+    local qs deadline pid cmdline
+
+    "$(caelestia_cli)" shell -k >/dev/null 2>&1 || true
+    if qs="$(quickshell_cli 2>/dev/null)"; then
+        # Kill every display-scoped instance for this config. "kill" targets one
+        # instance per invocation, so also try newest after the default oldest.
+        "$qs" -c caelestia kill --any-display >/dev/null 2>&1 || true
+        "$qs" -c caelestia kill --any-display --newest >/dev/null 2>&1 || true
+    fi
+
+    # Match both the pre-reexec qs launcher and the final quickshell binary.
+    pkill -u "$UID" -f '(^|/)qs[[:space:]]+-c[[:space:]]*caelestia([[:space:]]|$)'         >/dev/null 2>&1 || true
+    pkill -u "$UID" -f '(^|/)quickshell[[:space:]].*-c[[:space:]]*caelestia([[:space:]]|$)'         >/dev/null 2>&1 || true
+    pkill -u "$UID" -f '(^|/)quickshell[[:space:]].*/quickshell/caelestia'         >/dev/null 2>&1 || true
+
+    deadline=$((SECONDS + 5))
+    while caelestia_shell_is_running && (( SECONDS < deadline )); do
+        if (( SECONDS + 2 >= deadline )); then
+            while IFS= read -r pid; do
+                [[ -r "/proc/$pid/cmdline" ]] || continue
+                cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+                if [[ "$cmdline" == *'-c caelestia'* ||
+                      "$cmdline" == *'--config caelestia'* ||
+                      "$cmdline" == *'/quickshell/caelestia'* ]]; then
+                    kill -9 "$pid" >/dev/null 2>&1 || true
+                fi
+            done < <(pgrep -u "$UID" -x quickshell 2>/dev/null || true; \
+                     pgrep -u "$UID" -x qs 2>/dev/null || true)
+        fi
+        sleep 0.1
+    done
+
+    ! caelestia_shell_is_running
+}
+
+# Stop any previous instance, start a detached shell, and verify a live process
+# actually remains. Quickshell's -n/--no-duplicate path used by `caelestia shell`
+# can exit 0 with "already running" while the old process is still shutting
+# down; if that old process then exits, the desktop is left without a shell.
+restart_caelestia_shell() {
+    local log="${1:-/tmp/villode-caelestia-install.log}" attempt out rc=0 deadline attempt_log
+
+    : >"$log"
+    for attempt in 1 2 3; do
+        stop_caelestia_shell || true
+        rc=0
+        attempt_log="$(mktemp)"
+        {
+            printf 'restart attempt %s: launching caelestia shell -d\n' "$attempt"
+            LANG="${LANG:-zh_CN.UTF-8}" LC_ALL="${LC_ALL:-$LANG}" \
+                "$(caelestia_cli)" shell -d
+        } >"$attempt_log" 2>&1 || rc=$?
+        cat "$attempt_log" >>"$log"
+        out="$(cat "$attempt_log" 2>/dev/null || true)"
+        rm -f "$attempt_log"
+
+        if grep -Fq 'An instance of this configuration is already running.' <<<"$out"; then
+            printf 'restart attempt %s: start reported an existing instance; retrying\n' \
+                "$attempt" >>"$log"
+            sleep 0.2
+            continue
+        fi
+        if (( rc != 0 )); then
+            printf 'restart attempt %s: caelestia shell -d exited %s\n' \
+                "$attempt" "$rc" >>"$log"
+            sleep 0.2
+            continue
+        fi
+
+        deadline=$((SECONDS + 5))
+        while ! caelestia_shell_is_running && (( SECONDS < deadline )); do
+            sleep 0.1
+        done
+        if caelestia_shell_is_running; then
+            printf 'restart attempt %s: shell is running\n' "$attempt" >>"$log"
+            return 0
+        fi
+        printf 'restart attempt %s: start returned success but no live shell process\n' \
+            "$attempt" >>"$log"
+        sleep 0.2
+    done
+    return 1
+}
+
 prepare_sources
 bootstrap_build_tools
 install_session_dependencies
@@ -852,12 +990,10 @@ write_install_options
 publish_component_states
 
 if ! $no_start; then
-    "$HOME/.local/bin/caelestia" shell -k >/dev/null 2>&1 || true
-    # The CLI can leave an older detached Quickshell instance behind after an
-    # upgrade. Stop only Caelestia's own instances before starting one fresh
-    # process, otherwise duplicate panels keep running and waste resources.
-    pkill -u "$UID" -f '^qs -c caelestia([[:space:]]|$)' >/dev/null 2>&1 || true
-    "$HOME/.local/bin/caelestia" shell -d >/tmp/villode-caelestia-install.log 2>&1 || {
+    # Update/install often runs from inside the shell settings UI. The old
+    # process may still be exiting while the new start races with -n, so stop,
+    # start and verify with retries instead of a single fire-and-forget launch.
+    restart_caelestia_shell /tmp/villode-caelestia-install.log || {
         echo "组件已安装，但 Caelestia 自动启动失败。" >&2
         echo "日志：/tmp/villode-caelestia-install.log" >&2
         exit 70
