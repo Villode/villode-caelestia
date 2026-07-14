@@ -299,6 +299,7 @@ state_mtime_iso() {
 refresh_channel
 manifest="$channel_dir/components.tsv"
 actionable=()
+declare -A action_status
 # JSON rows collected as tab-separated payload for python encoder
 json_rows_file="$(mktemp)"
 trap 'rm -f "$json_rows_file"' EXIT
@@ -319,6 +320,7 @@ while IFS=$'\t' read -r id repo latest name; do
     else
         status="已是最新"
     fi
+    action_status["$id"]="$status"
     if [[ "$mode" != check-json ]]; then
         printf '%s\t%s\t%s\t%s\t%s\n' \
             "$id" "$name" "${installed:0:7}" "${latest:0:7}" "$status"
@@ -457,14 +459,19 @@ optional=()
 for id in "${actionable[@]}"; do
     [[ "$id" != shell ]] && optional+=("$id")
 done
+deferred_zh=false
 
-# Shell UI changes often break the Chinese language patch dry-run. If both are
-# queued, prefer updating Shell now and leave zh for a later reinstall rather
-# than failing the whole batch in preflight_zh_compatibility.
-if [[ " ${actionable[*]} " == *" shell "* && " ${optional[*]} " == *" zh "* ]]; then
+# A zh release that changes together with Shell has already been adapted and
+# should install in the same transaction. Only defer zh when its pinned version
+# is unchanged but the local installation needs repair; that commonly means the
+# old patch cannot be replayed over the new Shell yet.
+if [[ " ${actionable[*]} " == *" shell "* &&
+      " ${optional[*]} " == *" zh "* &&
+      "${action_status[zh]:-}" == "需要修复" ]]; then
     filtered=()
     for id in "${optional[@]}"; do
         if [[ "$id" == zh ]]; then
+            deferred_zh=true
             echo "注意：Shell 有更新时暂不同步简体中文（补丁需与新 Shell 对齐）。"
             echo "      Shell 更新完成后，可在设置中单独修复「Caelestia 简体中文」。"
             continue
@@ -475,6 +482,9 @@ if [[ " ${actionable[*]} " == *" shell "* && " ${optional[*]} " == *" zh "* ]]; 
 fi
 
 args=(--keep-existing)
+if $deferred_zh; then
+    args+=(--no-reapply-zh)
+fi
 if [[ " ${actionable[*]} " != *" shell "* ]] &&
    grep -q -- '--skip-shell' "$channel_dir/install.sh"; then
     args+=(--skip-shell)
@@ -505,7 +515,12 @@ fi
 [[ "$(option_value native_build yes)" == no ]] && args+=(--no-native-build)
 
 echo
-echo "即将同步 ${#actionable[@]} 个 Villode 组件：${actionable[*]}"
+syncing=()
+if [[ " ${actionable[*]} " == *" shell "* ]]; then
+    syncing+=(shell)
+fi
+syncing+=("${optional[@]}")
+echo "即将同步 ${#syncing[@]} 个 Villode 组件：${syncing[*]}"
 if [[ "$offline_mode" == yes ]]; then
     echo "更新源：本地缓存（离线）"
 else
