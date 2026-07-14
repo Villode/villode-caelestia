@@ -198,9 +198,9 @@ fi
 if $reapply_zh && ! $skip_shell &&
    { [[ -f "$state_home/zh.tsv" ]] ||
      [[ -x "$HOME/.local/bin/caelestia-zh-apply" &&
-        -f "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia-zh-cn/patches/zh-cn-ui.patch" ]]; } &&
+        -f "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia-zh-cn/i18n/qml_zh_CN.qm" ]]; } &&
    [[ " ${selected[*]} " != *" zh "* ]]; then
-    echo "检测到现有中文化组件，将在刷新 Shell 后自动重新应用。"
+    echo "检测到现有中文翻译包，将在刷新 Shell 后自动重新安装。"
     selected+=(zh)
 fi
 
@@ -272,25 +272,25 @@ install_session_dependencies() {
 
 install_language_dependencies() {
     [[ " ${selected[*]} " == *" zh "* ]] || return 0
-    if command -v patch >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1; then
+    if command -v python3 >/dev/null 2>&1 && command -v flock >/dev/null 2>&1; then
         return
     fi
     if ! $with_deps || $offline; then
-        echo "中文组件需要 patch 和 rsync；请先安装，或使用 --with-deps。" >&2
+        echo "中文组件需要 python3 和 flock；请先安装，或使用 --with-deps。" >&2
         return 69
     fi
     if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm patch rsync
+        sudo pacman -S --needed --noconfirm python util-linux
     elif command -v apt >/dev/null 2>&1; then
         sudo apt update
-        sudo apt install -y patch rsync
+        sudo apt install -y python3 util-linux
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y patch rsync
+        sudo dnf install -y python3 util-linux
     elif command -v zypper >/dev/null 2>&1; then
-        sudo zypper install -y patch rsync
+        sudo zypper install -y python3 util-linux
     fi
-    command -v patch >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 || {
-        echo "无法安装中文组件所需的 patch 和 rsync。" >&2
+    command -v python3 >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
+        echo "无法安装中文组件所需的 python3 和 flock。" >&2
         return 69
     }
 }
@@ -464,10 +464,10 @@ validate_component_source() {
     local id="$1" source_dir="${source_dirs[$1]}" required
     case "$id" in
         shell)
-            required=(install-villode.sh uninstall-villode.sh shell.qml UPSTREAM_VERSION assets components modules services utils)
+            required=(install-villode.sh uninstall-villode.sh shell.qml UPSTREAM_VERSION assets components i18n modules services utils)
             ;;
         zh)
-            required=(install.sh uninstall.sh bin/caelestia-zh-apply patches/zh-cn-ui.patch)
+            required=(install.sh uninstall.sh bin/caelestia-zh-apply i18n/qml_zh_CN.qm i18n/qml_zh_CN.ts i18n/zh_CN.json)
             ;;
         cursor)
             # Source is caelestia-shell (same repo pin as shell)
@@ -505,9 +505,8 @@ prefetch_component() {
 }
 
 preflight_zh_compatibility() {
-    local zh_source="${source_dirs[zh]}" shell_source help_text
+    local zh_source="${source_dirs[zh]}" shell_source
     local checker="$zh_source/bin/caelestia-zh-apply"
-    local patch_file="$zh_source/patches/zh-cn-ui.patch"
 
     if [[ -n "${source_dirs[shell]:-}" ]]; then
         shell_source="${source_dirs[shell]}"
@@ -519,22 +518,8 @@ preflight_zh_compatibility() {
         return 66
     }
 
-    help_text="$($checker --help 2>&1 || true)"
-    if command -v patch >/dev/null 2>&1 &&
-       grep -q -- '--check' <<< "$help_text" && grep -q -- '--source' <<< "$help_text"; then
-        CAELESTIA_PATCH_FILE="$patch_file" \
-            "$checker" --check --source "$shell_source"
-        return
-    fi
-
-    # Compatibility fallback for older language packages. git-apply performs a
-    # complete dry run and does not require the system `patch` command.
-    if git -C "$shell_source" apply --check "$patch_file" >/dev/null 2>&1 ||
-       git -C "$shell_source" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
-        return
-    fi
-    echo "中文组件与锁定的 Shell 版本不兼容；未对系统进行任何更改。" >&2
-    return 65
+    CAELESTIA_TRANSLATION_FILE="$zh_source/i18n/qml_zh_CN.qm" \
+        "$checker" --check --source "$shell_source"
 }
 
 prepare_sources() {

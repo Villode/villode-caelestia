@@ -151,9 +151,8 @@ component_evidence() {
             ;;
         zh)
             [[ -x "$HOME/.local/bin/caelestia-zh-apply" &&
-               -f "$user_data_home/caelestia-zh-cn/patches/zh-cn-ui.patch" ]] &&
-                "$HOME/.local/bin/caelestia-zh-apply" --check 2>/dev/null |
-                grep -q '已经应用'
+               -f "$user_data_home/caelestia-zh-cn/i18n/qml_zh_CN.qm" ]] &&
+                "$HOME/.local/bin/caelestia-zh-apply" --check >/dev/null 2>&1
             ;;
         dock) [[ -x "$HOME/.local/bin/villode-dock" ]] ;;
         desktop) [[ -x "$HOME/.local/bin/villode-desktop" ]] ;;
@@ -365,7 +364,7 @@ while IFS=$'\t' read -r id repo latest name; do
                         changes="Mac 风格晃动定位指针；未安装时可在此安装"
                         ;;
                     zh)
-                        changes="Caelestia 界面简体中文补丁"
+                        changes="Caelestia 界面简体中文翻译包"
                         ;;
                     dock)
                         changes="底部 Dock 栏"
@@ -386,7 +385,7 @@ while IFS=$'\t' read -r id repo latest name; do
             elif [[ "$status" == "需要修复" ]]; then
                 case "$id" in
                     zh)
-                        changes="中文补丁与当前 Shell 不兼容，需重新适配或重装简体中文"
+                        changes="中文翻译包或 Shell 翻译框架不完整，需要重新安装"
                         ;;
                     shell)
                         changes="本地 Shell 安装标记不一致，请重新安装以修复"
@@ -459,32 +458,7 @@ optional=()
 for id in "${actionable[@]}"; do
     [[ "$id" != shell ]] && optional+=("$id")
 done
-deferred_zh=false
-
-# A zh release that changes together with Shell has already been adapted and
-# should install in the same transaction. Only defer zh when its pinned version
-# is unchanged but the local installation needs repair; that commonly means the
-# old patch cannot be replayed over the new Shell yet.
-if [[ " ${actionable[*]} " == *" shell "* &&
-      " ${optional[*]} " == *" zh "* &&
-      "${action_status[zh]:-}" == "需要修复" ]]; then
-    filtered=()
-    for id in "${optional[@]}"; do
-        if [[ "$id" == zh ]]; then
-            deferred_zh=true
-            echo "注意：Shell 有更新时暂不同步简体中文（补丁需与新 Shell 对齐）。"
-            echo "      Shell 更新完成后，可在设置中单独修复「Caelestia 简体中文」。"
-            continue
-        fi
-        filtered+=("$id")
-    done
-    optional=("${filtered[@]}")
-fi
-
 args=(--keep-existing)
-if $deferred_zh; then
-    args+=(--no-reapply-zh)
-fi
 if [[ " ${actionable[*]} " != *" shell "* ]] &&
    grep -q -- '--skip-shell' "$channel_dir/install.sh"; then
     args+=(--skip-shell)

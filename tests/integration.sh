@@ -71,7 +71,8 @@ test_offline_no_hyprland_installs_successfully() {
     cp -a "$repo_dir/session/." "$channel/session/"
 
     git -C "$shell_source" init -q
-    mkdir -p "$shell_source"/{assets,components,modules,services,utils}
+    mkdir -p "$shell_source"/{assets,components,i18n,modules,services,utils}
+    printf '%s\n' qm > "$shell_source/i18n/qml_zh_CN.qm"
     printf '%s\n' 'Item {}' > "$shell_source/shell.qml"
     printf '%s\n' v1 > "$shell_source/UPSTREAM_VERSION"
     cat > "$shell_source/install-villode.sh" <<'SH'
@@ -167,7 +168,8 @@ test_preflight_failure_preserves_existing_desktop() {
     install -m755 "$repo_dir/install.sh" "$channel/install.sh"
 
     git -C "$shell_source" init -q
-    mkdir -p "$shell_source"/{assets,components,modules,services,utils}
+    mkdir -p "$shell_source"/{assets,components,i18n,modules,services,utils}
+    printf '%s\n' qm > "$shell_source/i18n/qml_zh_CN.qm"
     printf '%s\n' 'Item { property string text: "hello" }' > "$shell_source/shell.qml"
     printf '%s\n' v1 > "$shell_source/UPSTREAM_VERSION"
     printf '#!/usr/bin/env bash\ntouch "$HOME/shell-installed"\n' \
@@ -180,19 +182,14 @@ test_preflight_failure_preserves_existing_desktop() {
     shell_commit="$(git -C "$shell_source" rev-parse HEAD)"
 
     git -C "$zh_source" init -q
-    mkdir -p "$zh_source/bin" "$zh_source/patches"
+    mkdir -p "$zh_source/bin" "$zh_source/i18n"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$zh_source/install.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$zh_source/uninstall.sh"
-    printf '#!/usr/bin/env bash\nif [[ "${1:-}" == --help ]]; then echo usage; fi\n' \
+    printf '#!/usr/bin/env bash\n[[ -f "${4:-}/services/UiLanguage.qml" ]] || exit 65\n' \
         > "$zh_source/bin/caelestia-zh-apply"
-    printf '%s\n' \
-        'diff --git a/shell.qml b/shell.qml' \
-        '--- a/shell.qml' \
-        '+++ b/shell.qml' \
-        '@@ -1 +1 @@' \
-        '-Item { property string text: "different" }' \
-        '+Item { property string text: "中文" }' \
-        > "$zh_source/patches/zh-cn-ui.patch"
+    printf '%s\n' qm > "$zh_source/i18n/qml_zh_CN.qm"
+    printf '%s\n' ts > "$zh_source/i18n/qml_zh_CN.ts"
+    printf '%s\n' '{}' > "$zh_source/i18n/zh_CN.json"
     chmod +x "$zh_source/install.sh" "$zh_source/uninstall.sh" \
         "$zh_source/bin/caelestia-zh-apply"
     git -C "$zh_source" add .

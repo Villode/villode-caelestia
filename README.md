@@ -14,9 +14,9 @@
 | Desktop | 静态图片、视频和 HTML 桌面层 | [villode-desktop](https://github.com/Villode/villode-desktop) |
 | Launcher | macOS 风格应用启动台，与 Dock 拖放联动 | [villode-launcher](https://github.com/Villode/villode-launcher) |
 
-安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成中文补丁和组合测试后再更新锁定提交。
+安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成翻译目录和组合测试后再更新锁定提交。
 
-安装开始时会先获取全部选中组件、检查源码完整性，并验证中文组件能否干净应用到锁定的 Shell。只有这些检查和组件安装全部成功后，显式请求的旧桌面替换才会执行；失败的安装不会把组件状态标记成最新。
+安装开始时会先获取全部选中组件、检查源码完整性，并验证中文翻译包与锁定的 Shell 是否兼容。只有这些检查和组件安装全部成功后，显式请求的旧桌面替换才会执行；失败的安装不会把组件状态标记成最新。
 
 ## 前提
 
