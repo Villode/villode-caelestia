@@ -151,6 +151,7 @@ render_managed_session() {
         -v desktop="$have_desktop" \
         -v launcher="$have_launcher" \
         -v dock="$have_dock" '
+        /exec-once = villode-caelestia-shell-guard/ && !shell { next }
         /exec-once = caelestia shell -d/ && !shell { next }
         /exec-once = villode-desktop --daemon/ && !desktop { next }
         /exec-once = villode-launcher --daemon/ && !launcher { next }
@@ -194,7 +195,10 @@ commands = session.get("commands")
 if not isinstance(commands, dict):
     commands = {}
     session["commands"] = commands
-if commands.get("logout") != ["uwsm", "stop"]:
+managed = {("uwsm", "stop"), ("villode-logout",)}
+current = commands.get("logout")
+current_key = tuple(current) if isinstance(current, list) else None
+if current_key not in managed:
     # The user changed or removed the value after installation. Their newer
     # choice wins; only values still owned by Villode are restored.
     raise SystemExit(0)
@@ -249,7 +253,7 @@ refresh_lua_integration() {
     {
         echo '-- Managed by Villode Caelestia.'
         echo 'hl.on("hyprland.start", function()'
-        component_installed shell && echo '    hl.exec_cmd("caelestia shell -d")'
+        component_installed shell && echo '    hl.exec_cmd("villode-caelestia-shell-guard --daemon")'
         component_installed desktop && echo '    hl.exec_cmd("villode-desktop --daemon")'
         component_installed dock && echo '    hl.exec_cmd("villode-dock --daemon")'
         echo 'end)'
@@ -267,8 +271,14 @@ if ! any_component_installed; then
     restore_session_logout
     rm -rf "$data_home"
     rm -f "$state_home/install-options"
+    # Stop shell supervisor before removing it.
+    if [[ -x "$HOME/.local/bin/villode-caelestia-shell-guard" ]]; then
+        "$HOME/.local/bin/villode-caelestia-shell-guard" stop >/dev/null 2>&1 || true
+    fi
     rm -f "$HOME/.local/bin/villode-caelestia-uninstall" \
         "$HOME/.local/bin/villode-caelestia-update" \
+        "$HOME/.local/bin/villode-caelestia-shell-guard" \
+        "$HOME/.local/bin/villode-logout" \
         "$HOME/.local/bin/villode-terminal" \
         "$HOME/.local/bin/villode-explorer"
     # The outer flock process still owns the unlinked inode until this script

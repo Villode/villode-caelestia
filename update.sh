@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote="https://github.com/u0n0u/villode-caelestia.git"
+remote="${VILLODE_UPDATE_REMOTE:-https://github.com/u0n0u/villode-caelestia.git}"
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/update-channel"
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
 user_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -10,6 +10,65 @@ shell_state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia-shell"
 mode=update
 network_override=""
 install_missing=no
+channel_source="" # online-mirror | online-github | offline-cache | offline-release | stale-cache
+update_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+resolve_git_net_lib() {
+    local candidate
+    for candidate in \
+        "$update_script_dir/lib/git-net.sh" \
+        "$data_home/release/lib/git-net.sh" \
+        "$data_home/lib/git-net.sh" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/villode-caelestia/release/lib/git-net.sh"; do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+git_net_lib="$(resolve_git_net_lib || true)"
+if [[ -n "$git_net_lib" ]]; then
+    # shellcheck disable=SC1090
+    source "$git_net_lib"
+else
+    echo "缺少 lib/git-net.sh，无法处理 GitHub 访问回退。" >&2
+    exit 69
+fi
+
+# Older release channels may predate lib/git-net.sh. Inject the helper and, when
+# needed, a modern install.sh so component fetches still get mirror/timeout
+# behaviour even if the cached channel tree is from an older release.
+ensure_channel_git_net() {
+    local channel="$1" dest lib_src install_src
+    [[ -n "$channel" && -d "$channel" ]] || return 0
+    dest="$channel/lib/git-net.sh"
+    lib_src="$(resolve_git_net_lib || true)"
+    [[ -n "$lib_src" ]] || return 0
+    if [[ ! -f "$dest" ]]; then
+        install -Dm644 "$lib_src" "$dest"
+    fi
+    # Prefer install.sh that already sources git-net.
+    if [[ -f "$channel/install.sh" ]] && grep -q 'git-net\.sh' "$channel/install.sh" 2>/dev/null; then
+        return 0
+    fi
+    # Only upgrade known Villode installers — never overwrite stubs/tests.
+    if [[ -f "$channel/install.sh" ]] &&
+       ! grep -qE 'prefetch_component|villode-caelestia|acquire_operation_lock' \
+            "$channel/install.sh" 2>/dev/null; then
+        return 0
+    fi
+    install_src=""
+    if [[ -f "$update_script_dir/install.sh" ]] && grep -q 'git-net\.sh' "$update_script_dir/install.sh" 2>/dev/null; then
+        install_src="$update_script_dir/install.sh"
+    elif [[ -f "$data_home/release/install.sh" ]] && grep -q 'git-net\.sh' "$data_home/release/install.sh" 2>/dev/null; then
+        install_src="$data_home/release/install.sh"
+    fi
+    if [[ -n "$install_src" ]]; then
+        install -Dm755 "$install_src" "$channel/install.sh"
+        install -Dm644 "$lib_src" "$dest"
+    fi
+}
+
 
 acquire_operation_lock() {
     local lock_file="$state_home/operation.lock" rc
@@ -92,18 +151,54 @@ case "$network_override" in
     offline) offline_mode=yes ;;
 esac
 
+# Restore install-time GitHub channel preference (speed-test choice).
+# Explicit process env wins over install-options.
+_saved_source="$(option_value github_source "")"
+_saved_mirrors="$(option_value github_mirrors "")"
+_saved_prefer="$(option_value github_prefer_direct "")"
+if [[ -n "${VILLODE_GITHUB_SOURCE:-}" && "${VILLODE_GITHUB_SOURCE}" != auto ]]; then
+    villode_apply_github_source "$VILLODE_GITHUB_SOURCE" \
+        "${VILLODE_GITHUB_MIRRORS:-${_saved_mirrors//,/ }}"
+elif [[ -n "$_saved_source" ]]; then
+    export VILLODE_GITHUB_MIRRORS="${VILLODE_GITHUB_MIRRORS:-$_saved_mirrors}"
+    export VILLODE_PREFER_GITHUB_DIRECT="${VILLODE_PREFER_GITHUB_DIRECT:-${_saved_prefer:-0}}"
+    villode_apply_github_source "$_saved_source" "${_saved_mirrors//,/ }"
+else
+    villode_apply_github_source auto
+fi
+unset _saved_source _saved_mirrors _saved_prefer
+
 validate_channel() {
     local dir="$1"
     [[ -f "$dir/components.tsv" && -x "$dir/install.sh" ]]
 }
 
+use_local_channel_fallback() {
+    local installed_release="$data_home/release" reason="${1:-}"
+    if validate_channel "$cache_home"; then
+        channel_dir="$cache_home"
+        channel_source="stale-cache"
+        [[ -n "$reason" ]] && echo "$reason；改用本地更新渠道缓存。" >&2
+        return 0
+    fi
+    if validate_channel "$installed_release"; then
+        channel_dir="$installed_release"
+        channel_source="offline-release"
+        [[ -n "$reason" ]] && echo "$reason；改用已安装的发布渠道。" >&2
+        return 0
+    fi
+    return 1
+}
+
 refresh_channel() {
-    local installed_release="$data_home/release"
+    local installed_release="$data_home/release" err
     if [[ "$offline_mode" == yes ]]; then
         if validate_channel "$cache_home"; then
             channel_dir="$cache_home"
+            channel_source="offline-cache"
         elif validate_channel "$installed_release"; then
             channel_dir="$installed_release"
+            channel_source="offline-release"
         else
             echo "离线模式下没有可用的发布渠道缓存。" >&2
             exit 69
@@ -112,23 +207,53 @@ refresh_channel() {
     fi
 
     command -v git >/dev/null 2>&1 || {
+        if use_local_channel_fallback "未安装 git，无法在线检查更新"; then
+            return
+        fi
         echo "检查在线更新需要 git。" >&2
         exit 69
     }
     mkdir -p "$(dirname "$cache_home")"
+    err="$(mktemp)"
     if [[ ! -d "$cache_home/.git" ]]; then
         rm -rf "$cache_home"
-        git clone -q --filter=blob:none --depth=1 "$remote" "$cache_home"
+        if ! villode_git_clone_shallow "$remote" "$cache_home" 2>"$err"; then
+            rm -rf "$cache_home"
+            if use_local_channel_fallback "无法从 GitHub/镜像拉取更新渠道"; then
+                rm -f "$err"
+                return
+            fi
+            echo "无法从 GitHub 或镜像获取更新渠道（网络超时或不可达）。" >&2
+            [[ -s "$err" ]] && sed 's/^/  /' "$err" >&2
+            rm -f "$err"
+            exit 69
+        fi
     else
-        git -C "$cache_home" remote set-url origin "$remote"
-        git -C "$cache_home" fetch -q --depth=1 origin main
+        if ! villode_git_fetch_ref "$cache_home" "$remote" main 2>"$err"; then
+            if use_local_channel_fallback "在线刷新更新渠道失败"; then
+                rm -f "$err"
+                return
+            fi
+            echo "无法刷新更新渠道（GitHub/镜像均不可达）。" >&2
+            [[ -s "$err" ]] && sed 's/^/  /' "$err" >&2
+            rm -f "$err"
+            exit 69
+        fi
         git -C "$cache_home" reset -q --hard FETCH_HEAD
     fi
+    rm -f "$err"
     validate_channel "$cache_home" || {
         echo "更新渠道内容不完整，拒绝继续。" >&2
         exit 66
     }
     channel_dir="$cache_home"
+    # Prefer "github" only for the canonical host; proxy URLs also contain
+    # the substring github.com (e.g. ghproxy.net/https://github.com/...).
+    if git -C "$cache_home" remote get-url origin 2>/dev/null | grep -Eq '^https?://github\.com/'; then
+        channel_source="online-github"
+    else
+        channel_source="online-mirror"
+    fi
 }
 
 state_commit() {
@@ -243,25 +368,31 @@ ensure_component_git_meta() {
     [[ -n "$repo_url" ]] || return 0
     # Use caller's offline_mode (do not local-shadow it).
     [[ "${offline_mode:-no}" == yes ]] && return 0
+    # When the channel itself already fell back to local cache, skip extra
+    # GitHub traffic for changelog metadata so the settings page stays snappy.
+    case "${channel_source:-}" in
+        stale-cache|offline-cache|offline-release) return 0 ;;
+    esac
     command -v git >/dev/null 2>&1 || return 0
 
     mkdir -p "$sources_home"
     if [[ ! -d "$src/.git" ]]; then
-        git clone -q --filter=blob:none --depth=1 "$repo_url" "$src" 2>/dev/null || return 0
+        villode_git_clone_shallow "$repo_url" "$src" 2>/dev/null || return 0
     fi
-    git -C "$src" remote set-url origin "$repo_url" 2>/dev/null || true
 
     # Prefer fetching the pinned latest (and installed base for ranges).
     if [[ -n "$latest" ]] && ! git -C "$src" cat-file -e "${latest}^{commit}" 2>/dev/null; then
-        git -C "$src" fetch -q --depth=1 origin "$latest" 2>/dev/null || true
+        villode_git_fetch_commit "$src" "$repo_url" "$latest" 2>/dev/null || true
     fi
     if [[ -n "$installed" && "$installed" != "$latest" ]] &&
        ! git -C "$src" cat-file -e "${installed}^{commit}" 2>/dev/null; then
-        git -C "$src" fetch -q --depth=1 origin "$installed" 2>/dev/null || true
+        villode_git_fetch_commit "$src" "$repo_url" "$installed" 2>/dev/null || true
     fi
     # Deepen so ${installed}..${latest} can be walked when both tips exist.
     if [[ -n "$installed" && -n "$latest" && "$installed" != "$latest" ]]; then
-        git -C "$src" fetch -q --deepen=80 origin 2>/dev/null || true
+        villode_git_env
+        villode_git_timeout "$VILLODE_GIT_TIMEOUT" \
+            git -C "$src" fetch -q --deepen=80 origin 2>/dev/null || true
     fi
     return 0
 }
@@ -299,6 +430,7 @@ state_mtime_iso() {
 }
 
 refresh_channel
+ensure_channel_git_net "$channel_dir"
 manifest="$channel_dir/components.tsv"
 actionable=()
 missing=()
@@ -417,11 +549,13 @@ if [[ "$mode" == check ]]; then
 fi
 
 if [[ "$mode" == check-json ]]; then
-    python3 - "$json_rows_file" <<'PY'
+    python3 - "$json_rows_file" "${channel_source:-}" "${offline_mode:-no}" <<'PY'
 import json, sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 path = sys.argv[1]
+channel_source = sys.argv[2] if len(sys.argv) > 2 else ""
+offline_mode = sys.argv[3] if len(sys.argv) > 3 else "no"
 components = []
 with open(path, encoding="utf-8") as fh:
     for line in fh:
@@ -446,11 +580,21 @@ with open(path, encoding="utf-8") as fh:
             "changes": change_list,
         })
 
+source_notes = {
+    "online-github": "online-github",
+    "online-mirror": "online-mirror",
+    "stale-cache": "stale-cache",
+    "offline-cache": "offline-cache",
+    "offline-release": "offline-release",
+}
 out = {
     "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     "components": components,
     # Only states a plain update will act on; "未安装" needs --install-missing.
     "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复")),
+    "channelSource": source_notes.get(channel_source, channel_source or "unknown"),
+    "offline": offline_mode == "yes",
+    "networkDegraded": channel_source in ("stale-cache", "offline-cache", "offline-release"),
 }
 print(json.dumps(out, ensure_ascii=False, indent=2))
 PY
@@ -513,6 +657,10 @@ if ((${#missing[@]})) && [[ "$install_missing" == no ]]; then
 fi
 if [[ "$offline_mode" == yes ]]; then
     echo "更新源：本地缓存（离线）"
+elif [[ "$channel_source" == online-mirror ]]; then
+    echo "更新源：GitHub 镜像（$remote）"
+elif [[ "$channel_source" == stale-cache || "$channel_source" == offline-release ]]; then
+    echo "更新源：本地发布渠道（GitHub 不可达，使用已缓存版本）"
 else
     echo "更新源：$remote"
 fi

@@ -6,6 +6,18 @@ manifest="$repo_dir/components.tsv"
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/sources"
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}/villode-caelestia"
+# shellcheck source=lib/git-net.sh
+if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$repo_dir/lib/git-net.sh"
+elif [[ -f "$data_home/release/lib/git-net.sh" ]]; then
+    # Channel tree may lag; prefer the already-deployed helper.
+    # shellcheck disable=SC1091
+    source "$data_home/release/lib/git-net.sh"
+else
+    echo "缺少 lib/git-net.sh，无法处理 GitHub 访问回退。" >&2
+    exit 69
+fi
 # Keep the restart log out of the shared, predictable /tmp namespace.
 install_log="$state_home/install.log"
 selected=()
@@ -17,6 +29,9 @@ offline=false
 no_native_build=false
 skip_shell=false
 reapply_zh=true
+# github_source_choice: empty=decide later; auto/key=fixed; probe=run speed test
+github_source_choice=""
+skip_github_probe=false
 # Keep the current desktop as a recovery path unless replacement is explicitly
 # requested.  More importantly, replacement is deferred until every selected
 # source has been fetched, validated and installed successfully.
@@ -49,26 +64,113 @@ acquire_operation_lock "$@"
 
 usage() {
     cat <<'EOF'
-用法：./install.sh [选项]
+用法 / Usage：./install.sh [选项]
 
-Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选择菜单。
+始终安装锁定的 Caelestia Shell；未指定可选组件时显示交互菜单。
+Always installs the pinned Caelestia Shell; shows a menu for optional components when none are given.
 
-选项：
-  --all                    安装全部组件
-  --components LIST        安装逗号分隔的可选组件：zh,dock,desktop,launcher,cursor
-  --with-deps              自动检测并安装缺失依赖（默认）
-  --no-deps                不安装缺失的系统依赖
-  --no-start               安装后不启动或重启组件
-  --no-hyprland            不写任何 Hyprland 集成（包含独立会话）
-  --no-session             不安装独立 Villode Hyprland 登录会话
-  --offline                仅使用本地缓存，不访问网络
-  --no-native-build        不构建 Fork 的原生插件，仅部署 QML
-  --skip-shell             不重新部署 Shell（供更新器内部使用）
-  --no-reapply-zh          刷新 Shell 时不自动重新应用已安装的中文化
-  --replace-existing       验证并安装成功后，备份并移除现有桌面壳
-  --keep-existing          保留检测到的现有桌面壳（非交互默认；交互模式会询问）
-  -h, --help               显示帮助
+适合已有桌面，也适合纯 TTY / 无桌面机器（会装 Hyprland + SDDM 等，结束后重启进 Villode Hyprland）。
+Works from an existing desktop or from a bare TTY (pulls Hyprland + SDDM, then reboot into Villode Hyprland).
+
+选项 / Options：
+  --all                    安装全部组件 / install all optional components
+  --components LIST        可选：zh,dock,desktop,launcher,cursor
+  --with-deps              自动安装缺失系统依赖（默认）/ auto-install missing packages (default)
+  --no-deps                不装系统包 / do not install system packages
+  --no-start               安装后不启动组件 / deploy only, do not launch apps
+  --no-hyprland            不写任何 Hyprland 集成 / no Hyprland integration at all
+  --no-session             不装独立 Villode 登录会话 / no dedicated login session
+  --offline                仅本地缓存 / local cache only
+  --no-native-build        不构建原生插件 / skip native plugin build
+  --skip-shell             不重装 Shell（更新器内部）/ skip shell redeploy (updater)
+  --no-reapply-zh          刷新 Shell 时不重装中文化 / do not reapply zh on shell refresh
+  --replace-existing       成功后替换旧桌面壳 / replace existing desktop shells after success
+  --keep-existing          保留旧桌面壳 / keep existing desktop shells
+  --github-source KEY      更新通道 / channel: auto|github.com|kkgithub.com|ghproxy.net|...
+  --probe-github           测速并选择通道 / speed-test mirrors then choose
+  --skip-github-probe      跳过测速 / skip mirror probe
+  -h, --help               显示帮助 / show this help
+
+TTY 示例 / TTY example：
+  ./install.sh --all && sudo reboot
+  # then pick "Villode Hyprland" in SDDM
 EOF
+}
+
+# True when we are not inside a running Wayland/X11 graphical session
+# (plain TTY, SSH without display, early boot, etc.).
+is_graphical_session() {
+    [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]] && return 0
+    case "${XDG_SESSION_TYPE:-}" in
+        wayland|x11|mir) return 0 ;;
+    esac
+    return 1
+}
+
+# On TTY / headless: do not try to start Shell/Dock (no compositor yet).
+# Still install the login session + DM so the user can reboot into the desktop.
+adapt_for_tty_install() {
+    if is_graphical_session; then
+        return 0
+    fi
+    echo
+    echo "检测到当前为 TTY / 无图形会话（no Wayland/X11 display）。"
+    echo "Detected TTY or non-graphical session."
+    if ! $no_start; then
+        no_start=true
+        echo "→ 自动使用 --no-start：安装完成后不会在此启动 Shell/Dock。"
+        echo "→ Auto --no-start: will not launch Shell/Dock here (no compositor)."
+    fi
+    if $install_session; then
+        echo "→ 将安装独立 Villode Hyprland 会话与登录管理器（如 SDDM）。"
+        echo "→ Will install Villode Hyprland session + display manager (e.g. SDDM)."
+        echo "→ 完成后请执行：sudo reboot ，在登录界面选择 “Villode Hyprland”。"
+        echo "→ When finished: sudo reboot , then select “Villode Hyprland” at the greeter."
+    else
+        echo "→ 已指定 --no-session：不会创建登录会话。若需要图形登录，请去掉该选项重装。"
+        echo "→ --no-session set: no login session. Re-run without it for a greeter entry."
+    fi
+    echo
+}
+
+print_install_summary() {
+    echo
+    if $skip_shell; then
+        echo "安装完成 / Done：${selected[*]}"
+    else
+        echo "安装完成 / Done：shell ${selected[*]}"
+    fi
+    echo "卸载 / Uninstall：villode-caelestia-uninstall"
+    echo "更新 / Update：  villode-caelestia-update"
+    if $install_session && ! $no_hyprland; then
+        echo
+        echo "登录会话 / Login session：Villode Hyprland"
+        echo "  配置 / config：~/.config/villode-hyprland/hyprland.conf"
+        if ! is_graphical_session; then
+            echo
+            echo "你当前在 TTY。请重启后进入图形会话："
+            echo "You are on a TTY. Reboot into the graphical session:"
+            echo "  sudo reboot"
+            echo "  → SDDM / greeter → “Villode Hyprland”"
+            if command -v systemctl >/dev/null 2>&1; then
+                if systemctl is-enabled sddm.service >/dev/null 2>&1; then
+                    echo "  SDDM：已启用 / enabled"
+                else
+                    echo "  提示：若无登录界面，可执行：sudo systemctl enable --now sddm"
+                    echo "  Tip: if no greeter, run: sudo systemctl enable --now sddm"
+                fi
+            fi
+        else
+            echo "  注销会话后在登录管理器中选择 “Villode Hyprland”。"
+            echo "  Log out and select “Villode Hyprland” in your display manager."
+        fi
+    fi
+    if [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/caelestia/shell.json" ]]; then
+        echo
+        echo "默认应用已按系统已装软件识别（设置里可改，重装不会覆盖你的选择）。"
+        echo "Default apps detected from installed software (Settings override is kept)."
+    fi
+    echo
 }
 
 normalise_component() {
@@ -146,6 +248,20 @@ while (($#)); do
         --keep-existing)
             replace_existing=no
             ;;
+        --github-source)
+            [[ $# -ge 2 ]] || { echo "--github-source 缺少参数" >&2; exit 64; }
+            github_source_choice="$2"
+            shift
+            ;;
+        --github-source=*)
+            github_source_choice="${1#*=}"
+            ;;
+        --probe-github)
+            github_source_choice=probe
+            ;;
+        --skip-github-probe)
+            skip_github_probe=true
+            ;;
         -h|--help)
             usage
             exit 0
@@ -172,18 +288,19 @@ fi
 if ((${#selected[@]} == 0)); then
     if [[ ! -t 0 ]]; then
         echo "非交互环境中请使用 --all 或 --components。" >&2
+        echo "Non-interactive: pass --all or --components." >&2
         exit 64
     fi
     cat <<'EOF'
-选择要安装的组件：
-  1. Caelestia 简体中文
+选择要安装的组件 / Choose optional components：
+  1. Caelestia 简体中文 / Simplified Chinese
   2. Villode Dock
   3. Villode Desktop
   4. Villode Launcher
-  5. Villode 指针放大（晃动定位）
-  a. 全部组件
+  5. Villode 指针放大 / cursor shake-to-find
+  a. 全部 / all
 EOF
-    read -r -p "输入编号（可用逗号分隔，默认 a）：" answer
+    read -r -p "输入编号（逗号分隔，默认 a）/ numbers (default a): " answer
     answer="${answer:-a}"
     if [[ "$answer" == "a" || "$answer" == "A" ]]; then
         selected=(zh dock desktop launcher cursor)
@@ -201,6 +318,62 @@ if $offline && $with_deps; then
     echo "离线模式不会安装系统依赖；按 --no-deps 继续。"
     with_deps=false
 fi
+
+# TTY / no display: skip live start, guide user to reboot into SDDM.
+adapt_for_tty_install
+
+# Resolve GitHub access channel (speed test + user choice). Offline skips probe
+# but still records an explicit --github-source for later online updates.
+configure_github_source() {
+    local saved_source saved_mirrors saved_prefer
+    if $offline; then
+        if [[ -n "$github_source_choice" &&
+              "$github_source_choice" != probe &&
+              "$github_source_choice" != auto &&
+              "$github_source_choice" != offline ]]; then
+            villode_apply_github_source "$github_source_choice"
+        else
+            villode_apply_github_source "${VILLODE_GITHUB_SOURCE:-auto}"
+        fi
+        return 0
+    fi
+    if $skip_github_probe && [[ -z "$github_source_choice" || "$github_source_choice" == auto ]]; then
+        saved_source="$(awk -F= '$1=="github_source"{print substr($0,index($0,"=")+1);exit}' \
+            "$state_home/install-options" 2>/dev/null || true)"
+        saved_mirrors="$(awk -F= '$1=="github_mirrors"{print substr($0,index($0,"=")+1);exit}' \
+            "$state_home/install-options" 2>/dev/null || true)"
+        saved_prefer="$(awk -F= '$1=="github_prefer_direct"{print substr($0,index($0,"=")+1);exit}' \
+            "$state_home/install-options" 2>/dev/null || true)"
+        if [[ -n "$saved_source" ]]; then
+            [[ -n "$saved_mirrors" ]] && export VILLODE_GITHUB_MIRRORS="$saved_mirrors"
+            [[ -n "$saved_prefer" ]] && export VILLODE_PREFER_GITHUB_DIRECT="$saved_prefer"
+            villode_apply_github_source "$saved_source"
+            echo "沿用已保存的更新通道：$(villode_source_label "$saved_source")"
+            return 0
+        fi
+        export VILLODE_SKIP_PROBE=1
+        villode_select_github_source
+        return 0
+    fi
+    if [[ -n "$github_source_choice" &&
+          "$github_source_choice" != probe &&
+          "$github_source_choice" != auto ]]; then
+        export VILLODE_GITHUB_SOURCE_FORCE="$github_source_choice"
+        villode_select_github_source
+        return 0
+    fi
+    # probe / auto / default:
+    # - interactive + default → probe then menu
+    # - auto or non-interactive → probe then auto-pick fastest
+    if [[ "$github_source_choice" == auto || ( -z "$github_source_choice" && ! -t 0 ) ]]; then
+        export VILLODE_GITHUB_SOURCE_FORCE=auto
+    else
+        unset VILLODE_GITHUB_SOURCE_FORCE 2>/dev/null || true
+    fi
+    unset VILLODE_SKIP_PROBE 2>/dev/null || true
+    villode_select_github_source
+}
+configure_github_source
 
 # --no-hyprland is an absolute promise not to create either integration files
 # in the user's session or a separate Hyprland session.
@@ -267,6 +440,44 @@ bootstrap_build_tools() {
     fi
 }
 
+# Install packages from official repos when available; skip unknown names.
+pacman_install_available() {
+    local pkg available=()
+    (($#)) || return 0
+    command -v pacman >/dev/null 2>&1 || return 1
+    for pkg in "$@"; do
+        if pacman -Si "$pkg" >/dev/null 2>&1 || pacman -Q "$pkg" >/dev/null 2>&1; then
+            available+=("$pkg")
+        else
+            echo "跳过不可用软件包：$pkg"
+        fi
+    done
+    ((${#available[@]})) || return 0
+    sudo pacman -S --needed --noconfirm "${available[@]}"
+}
+
+# AUR helper install (yay/paru). Best-effort; never hard-fail the whole install.
+aur_install_available() {
+    local helper pkg
+    (($#)) || return 0
+    if command -v yay >/dev/null 2>&1; then
+        helper=yay
+    elif command -v paru >/dev/null 2>&1; then
+        helper=paru
+    else
+        echo "未找到 yay/paru，跳过 AUR 包：$*"
+        return 0
+    fi
+    for pkg in "$@"; do
+        if pacman -Q "$pkg" >/dev/null 2>&1; then
+            continue
+        fi
+        echo "通过 $helper 安装：$pkg"
+        "$helper" -S --needed --noconfirm "$pkg" || \
+            echo "警告：安装 $pkg 失败，可稍后手动安装。" >&2
+    done
+}
+
 install_session_dependencies() {
     # --skip-shell is used by the updater for an already installed suite.
     # Session prerequisites were handled by the original full installation;
@@ -276,42 +487,152 @@ install_session_dependencies() {
     $with_deps || return 0
     $offline && return
     if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm \
+        # Compositor + portals + audio + network + session manager.
+        # GTK4 stack is required by Dock/Desktop (user-reported hard dependency).
+        pacman_install_available \
             hyprland xdg-desktop-portal xdg-desktop-portal-hyprland \
             xdg-desktop-portal-gtk polkit-gnome pipewire wireplumber \
-            networkmanager uwsm alacritty
+            networkmanager uwsm \
+            gtk3 gtk4 gtk4-layer-shell gtk-layer-shell \
+            libadwaita adwaita-icon-theme hicolor-icon-theme \
+            qt6-base qt6-declarative qt6-svg qt6-wayland \
+            python python-gobject python-cairo \
+            sddm
+        # Daily apps: terminal, file manager, media, images, browser.
+        # Prefer repo packages; Chrome may need AUR.
+        pacman_install_available \
+            alacritty thunar mpv imv loupe \
+            xdg-utils shared-mime-info
+        # Browser: try google-chrome via AUR if missing; else firefox.
+        if ! command -v google-chrome-stable >/dev/null 2>&1 && \
+           ! command -v google-chrome >/dev/null 2>&1 && \
+           ! command -v chromium >/dev/null 2>&1; then
+            if pacman -Si firefox >/dev/null 2>&1; then
+                pacman_install_available firefox
+            fi
+            aur_install_available google-chrome
+        fi
+        # Enable display manager when we installed/have sddm and none is active.
+        ensure_display_manager
+    fi
+}
+
+ensure_display_manager() {
+    local unit
+    $offline && return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    # Already have an enabled DM?
+    for unit in sddm.service gdm.service lightdm.service ly.service greetd.service; do
+        if systemctl is-enabled "$unit" >/dev/null 2>&1; then
+            echo "登录管理器已启用：$unit"
+            return 0
+        fi
+    done
+    if systemctl list-unit-files sddm.service >/dev/null 2>&1 || \
+       pacman -Q sddm >/dev/null 2>&1; then
+        echo "正在启用 SDDM 登录管理器……"
+        sudo systemctl enable sddm.service 2>/dev/null || true
+        # Do not start now if already in a graphical session (would disrupt user).
+        if [[ "${XDG_SESSION_TYPE:-}" != wayland && "${XDG_SESSION_TYPE:-}" != x11 ]]; then
+            sudo systemctl start sddm.service 2>/dev/null || true
+        fi
     fi
 }
 
 install_language_dependencies() {
-    [[ " ${selected[*]} " == *" zh "* ]] || return 0
-    if command -v python3 >/dev/null 2>&1 && command -v flock >/dev/null 2>&1; then
-        return
+    # Always ensure python/flock for zh; also set up Chinese IME for the suite.
+    if ! command -v python3 >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
+        if ! $with_deps || $offline; then
+            if [[ " ${selected[*]} " == *" zh "* ]]; then
+                echo "中文组件需要 python3 和 flock；请先安装，或使用 --with-deps。" >&2
+                return 69
+            fi
+        else
+            if command -v pacman >/dev/null 2>&1; then
+                sudo pacman -S --needed --noconfirm python util-linux
+            elif command -v apt >/dev/null 2>&1; then
+                sudo apt update
+                sudo apt install -y python3 util-linux
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y python3 util-linux
+            elif command -v zypper >/dev/null 2>&1; then
+                sudo zypper install -y python3 util-linux
+            fi
+        fi
     fi
-    if ! $with_deps || $offline; then
-        echo "中文组件需要 python3 和 flock；请先安装，或使用 --with-deps。" >&2
-        return 69
+    if [[ " ${selected[*]} " == *" zh "* ]] || $install_session; then
+        if $with_deps && ! $offline && command -v pacman >/dev/null 2>&1; then
+            # Chinese input method stack (Wayland-friendly).
+            pacman_install_available \
+                fcitx5 fcitx5-chinese-addons fcitx5-gtk fcitx5-qt \
+                fcitx5-configtool fcitx5-material-color \
+                noto-fonts-cjk wqy-zenhei wqy-microhei
+            configure_chinese_input
+        fi
     fi
-    if command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm python util-linux
-    elif command -v apt >/dev/null 2>&1; then
-        sudo apt update
-        sudo apt install -y python3 util-linux
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y python3 util-linux
-    elif command -v zypper >/dev/null 2>&1; then
-        sudo zypper install -y python3 util-linux
+    if [[ " ${selected[*]} " == *" zh "* ]]; then
+        command -v python3 >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
+            echo "无法安装中文组件所需的 python3 和 flock。" >&2
+            return 69
+        }
     fi
-    command -v python3 >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 || {
-        echo "无法安装中文组件所需的 python3 和 flock。" >&2
-        return 69
-    }
+}
+
+configure_chinese_input() {
+    local env_dir conf profile_dir
+    env_dir="$HOME/.config/environment.d"
+    conf="$env_dir/90-villode-fcitx5.conf"
+    mkdir -p "$env_dir"
+    cat > "$conf" <<'EOF'
+# Managed by Villode Caelestia — Chinese input (fcitx5)
+GTK_IM_MODULE=fcitx
+QT_IM_MODULE=fcitx
+QT_IM_MODULES=wayland;fcitx;ibus
+XMODIFIERS=@im=fcitx
+SDL_IM_MODULE=fcitx
+EOF
+    # Minimal fcitx5 profile so pinyin is available out of the box.
+    profile_dir="$HOME/.config/fcitx5"
+    mkdir -p "$profile_dir/conf"
+    if [[ ! -f "$profile_dir/profile" ]]; then
+        cat > "$profile_dir/profile" <<'EOF'
+[Groups/0]
+# Group Name
+Name=Default
+# Layout
+Default Layout=us
+# Default Input Method
+DefaultIM=pinyin
+
+[Groups/0/Items/0]
+# Name
+Name=keyboard-us
+# Layout
+Layout=
+
+[Groups/0/Items/1]
+# Name
+Name=pinyin
+# Layout
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+    fi
+    # Ensure pinyin addon config exists
+    if [[ ! -f "$profile_dir/conf/pinyin.conf" ]]; then
+        cat > "$profile_dir/conf/pinyin.conf" <<'EOF'
+# Managed by Villode — defaults for fcitx5-chinese-addons pinyin
+EOF
+    fi
+    echo "已配置中文输入法环境（fcitx5）；注销重新登录后生效。"
 }
 
 validate_session_terminal() {
     local terminal
     $install_session || return 0
-    for terminal in alacritty foot xterm; do
+    for terminal in alacritty kitty foot wezterm gnome-terminal konsole xfce4-terminal xterm; do
         command -v "$terminal" >/dev/null 2>&1 && return
     done
     echo "独立会话需要终端（推荐 Alacritty）；请安装后重试，或使用 --with-deps。" >&2
@@ -461,13 +782,18 @@ fetch_component() {
         echo "离线缓存缺少组件或版本不匹配：$id" >&2
         return 69
     fi
+    mkdir -p "$cache_home"
     fetch_dir="$(mktemp -d "$cache_home/.fetch-$id.XXXXXX")"
-    if ! git -C "$fetch_dir" init -q ||
-       ! git -C "$fetch_dir" remote add origin "$repo" ||
-       ! git -C "$fetch_dir" fetch -q --depth=1 origin "$commit" ||
+    if ! git -C "$fetch_dir" init -q; then
+        rm -rf "$fetch_dir"
+        echo "无法初始化组件缓存：$id" >&2
+        return 69
+    fi
+    villode_git_env
+    if ! villode_git_fetch_ref "$fetch_dir" "$repo" "$commit" ||
        ! git -C "$fetch_dir" checkout -q --detach FETCH_HEAD; then
         rm -rf "$fetch_dir"
-        echo "无法获取锁定版本：$id ${commit:0:12}" >&2
+        echo "无法获取锁定版本：$id ${commit:0:12}（GitHub/镜像均失败或超时）" >&2
         return 69
     fi
     rm -rf "$source_dir"
@@ -621,7 +947,7 @@ configure_hyprland_lua_autostart() {
 hl.on("hyprland.start", function()
 EOF
         component_available shell && \
-            echo '    hl.exec_cmd("caelestia shell -d")'
+            echo '    hl.exec_cmd("villode-caelestia-shell-guard --daemon")'
         component_available desktop && \
             echo '    hl.exec_cmd("villode-desktop --daemon")'
         component_available dock && \
@@ -661,6 +987,7 @@ render_session_config() {
         -v desktop="$have_desktop" \
         -v launcher="$have_launcher" \
         -v dock="$have_dock" '
+        /exec-once = villode-caelestia-shell-guard/ && !shell { next }
         /exec-once = caelestia shell -d/ && !shell { next }
         /exec-once = villode-desktop --daemon/ && !desktop { next }
         /exec-once = villode-launcher --daemon/ && !launcher { next }
@@ -706,7 +1033,16 @@ if not isinstance(commands, dict):
     session["commands"] = commands
 if not backup.exists():
     backup.parent.mkdir(parents=True, exist_ok=True)
-    if legacy_managed and commands.get("logout") == ["uwsm", "stop"]:
+    # Treat previous Villode-managed values as not user-owned.
+    managed = {
+        ("uwsm", "stop"),
+        ("villode-logout",),
+    }
+    current = commands.get("logout")
+    if legacy_managed and (
+        (isinstance(current, list) and tuple(current) in managed)
+        or current in (["uwsm", "stop"], ["villode-logout"])
+    ):
         # Older Villode installers wrote this value without preserving the
         # prior setting. Removing it on uninstall restores Caelestia's default.
         saved = {"present": False, "value": None}
@@ -715,11 +1051,201 @@ if not backup.exists():
     temp = backup.with_name(backup.name + f".tmp-{os.getpid()}")
     temp.write_text(json.dumps(saved, ensure_ascii=False) + "\n")
     temp.replace(backup)
-commands["logout"] = ["uwsm", "stop"]
+# villode-logout stops the shell guard then runs `uwsm stop` so SDDM returns.
+commands["logout"] = ["villode-logout"]
 path.parent.mkdir(parents=True, exist_ok=True)
 temp = path.with_name(path.name + f".tmp-{os.getpid()}")
 temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 temp.replace(path)
+PY
+}
+
+# Detect system apps and write Caelestia defaults only when missing/broken.
+# User-chosen values in shell.json are never overwritten.
+configure_default_apps() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - <<'PY'
+import json
+import os
+import shutil
+from pathlib import Path
+
+path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "caelestia" / "shell.json"
+try:
+    data = json.loads(path.read_text()) if path.exists() else {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+
+def first_cmd(names):
+    for name in names:
+        if shutil.which(name):
+            return [name]
+    return None
+
+def is_broken(value, wrappers=(), key=""):
+    if value in (None, [], ""):
+        return True
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        return True
+    head = value[0]
+    # Missing binary or known-bad defaults / wrappers used as "apps"
+    if head in wrappers:
+        return True
+    if head in ("foot", "thunar") and not shutil.which(head):
+        return True
+    # Temporary xdg-open home fallback is replaced when a real FM appears.
+    if key == "explorer" and head == "xdg-open":
+        return True
+    if not shutil.which(head) and head not in ("xdg-open",):
+        return True
+    return False
+
+general = data.setdefault("general", {})
+if not isinstance(general, dict):
+    general = {}
+    data["general"] = general
+apps = general.setdefault("apps", {})
+if not isinstance(apps, dict):
+    apps = {}
+    general["apps"] = apps
+
+# Prefer real system binaries. Order = preference when multiple exist.
+candidates = {
+    "terminal": (
+        "alacritty", "kitty", "foot", "wezterm", "gnome-terminal",
+        "konsole", "xfce4-terminal", "xterm",
+    ),
+    "explorer": (
+        "nautilus", "dolphin", "thunar", "nemo", "pcmanfm", "caja", "cosmic-files",
+    ),
+    "browser": (
+        "google-chrome-stable", "google-chrome", "chromium",
+        "brave", "brave-browser", "microsoft-edge-stable",
+        "firefox", "firefox-developer-edition",
+    ),
+    "playback": (
+        "mpv", "vlc", "celluloid", "totem",
+    ),
+    "audio": (
+        "pavucontrol", "pavucontrol-qt", "qpwgraph", "helvum",
+    ),
+}
+wrappers = {
+    "terminal": ("villode-terminal",),
+    "explorer": ("villode-explorer",),
+    "browser": (),
+    "playback": (),
+    "audio": (),
+}
+
+chosen = {}
+for key, names in candidates.items():
+    cur = apps.get(key)
+    if not is_broken(cur, wrappers.get(key, ()), key=key):
+        chosen[key] = cur if isinstance(cur, list) else [cur]
+        continue
+    found = first_cmd(names)
+    if found:
+        apps[key] = found
+        chosen[key] = found
+    elif key == "explorer" and shutil.which("xdg-open"):
+        apps[key] = ["xdg-open", str(Path.home())]
+        chosen[key] = apps[key]
+
+path.parent.mkdir(parents=True, exist_ok=True)
+tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+tmp.replace(path)
+
+# mimeapps.list — only fill missing associations
+mime = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mimeapps.list"
+desktop_map = {
+    "alacritty": "Alacritty.desktop",
+    "kitty": "kitty.desktop",
+    "foot": "foot.desktop",
+    "nautilus": "org.gnome.Nautilus.desktop",
+    "dolphin": "org.kde.dolphin.desktop",
+    "thunar": "thunar.desktop",
+    "nemo": "nemo.desktop",
+    "pcmanfm": "pcmanfm.desktop",
+    "google-chrome-stable": "google-chrome.desktop",
+    "google-chrome": "google-chrome.desktop",
+    "chromium": "chromium.desktop",
+    "firefox": "firefox.desktop",
+    "mpv": "mpv.desktop",
+    "vlc": "vlc.desktop",
+    "imv": "imv.desktop",
+    "loupe": "org.gnome.Loupe.desktop",
+    "eog": "org.gnome.eog.desktop",
+    "gwenview": "org.kde.gwenview.desktop",
+}
+
+def desk(cmd_list):
+    if not cmd_list:
+        return None
+    return desktop_map.get(cmd_list[0])
+
+# Image viewer is not a Caelestia apps key; still set mime defaults.
+image_cmd = first_cmd(("imv", "loupe", "eog", "gwenview", "feh", "sxiv"))
+associations = {
+    "inode/directory": desk(chosen.get("explorer")),
+    "text/html": desk(chosen.get("browser")),
+    "x-scheme-handler/http": desk(chosen.get("browser")),
+    "x-scheme-handler/https": desk(chosen.get("browser")),
+    "video/mp4": desk(chosen.get("playback")),
+    "video/x-matroska": desk(chosen.get("playback")),
+    "audio/mpeg": desk(chosen.get("playback")),
+    "image/png": desk(image_cmd) if image_cmd else None,
+    "image/jpeg": desk(image_cmd) if image_cmd else None,
+    "image/webp": desk(image_cmd) if image_cmd else None,
+    "image/gif": desk(image_cmd) if image_cmd else None,
+}
+associations = {k: v for k, v in associations.items() if v}
+
+existing = {}
+section = None
+if mime.exists():
+    for line in mime.read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            existing.setdefault(section, {})
+            continue
+        if section and "=" in line and not line.strip().startswith("#"):
+            k, _, v = line.partition("=")
+            existing.setdefault(section, {})[k.strip()] = v.strip()
+
+default = existing.setdefault("Default Applications", {})
+added = existing.setdefault("Added Associations", {})
+changed = False
+for mime_type, desktop in associations.items():
+    if mime_type not in default:
+        default[mime_type] = desktop
+        changed = True
+    if mime_type not in added:
+        added[mime_type] = desktop + ";"
+        changed = True
+
+if changed or not mime.exists():
+    mime.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for section_name in ("Default Applications", "Added Associations"):
+        lines.append(f"[{section_name}]")
+        for k, v in sorted(existing.get(section_name, {}).items()):
+            lines.append(f"{k}={v}")
+        lines.append("")
+    mime.write_text("\n".join(lines))
+
+print("默认应用：")
+for key in ("terminal", "explorer", "browser", "playback", "audio"):
+    val = apps.get(key)
+    if val:
+        print(f"  {key}: {' '.join(val) if isinstance(val, list) else val}")
+if image_cmd:
+    print(f"  image: {' '.join(image_cmd)}")
 PY
 }
 
@@ -767,6 +1293,9 @@ write_install_options() {
         $install_session && echo 'session=yes' || echo 'session=no'
         $offline && echo 'offline=yes' || echo 'offline=no'
         $no_native_build && echo 'native_build=no' || echo 'native_build=yes'
+        echo "github_source=${VILLODE_GITHUB_SOURCE:-auto}"
+        echo "github_mirrors=${VILLODE_GITHUB_MIRRORS:-kkgithub.com,ghproxy.net}"
+        echo "github_prefer_direct=${VILLODE_PREFER_GITHUB_DIRECT:-0}"
     } > "$tmp"
     mv "$tmp" "$state_home/install-options"
 }
@@ -778,19 +1307,42 @@ install_release_files() {
         install -Dm755 "$repo_dir/uninstall.sh" "$release_dir/uninstall.sh"
         install -Dm755 "$repo_dir/update.sh" "$release_dir/update.sh"
         install -Dm644 "$manifest" "$release_dir/components.tsv"
+        if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
+            install -Dm644 "$repo_dir/lib/git-net.sh" "$release_dir/lib/git-net.sh"
+        fi
         for file in villode-hyprland.conf start-villode-hyprland \
             villode-hyprland-compositor villode-hyprland.desktop \
-            villode-terminal villode-explorer; do
+            villode-terminal villode-explorer villode-caelestia-shell-guard \
+            villode-logout; do
+            [[ -f "$repo_dir/session/$file" ]] || continue
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
         chmod 755 "$release_dir/session/start-villode-hyprland" \
             "$release_dir/session/villode-hyprland-compositor" \
             "$release_dir/session/villode-terminal" \
-            "$release_dir/session/villode-explorer"
+            "$release_dir/session/villode-explorer" \
+            "$release_dir/session/villode-caelestia-shell-guard" \
+            2>/dev/null || true
+        [[ -f "$release_dir/session/villode-logout" ]] && \
+            chmod 755 "$release_dir/session/villode-logout"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
     install -Dm755 "$repo_dir/update.sh" "$HOME/.local/bin/villode-caelestia-update"
+    if [[ -f "$repo_dir/session/villode-caelestia-shell-guard" ]]; then
+        install -Dm755 "$repo_dir/session/villode-caelestia-shell-guard" \
+            "$HOME/.local/bin/villode-caelestia-shell-guard"
+    fi
+    if [[ -f "$repo_dir/session/villode-logout" ]]; then
+        install -Dm755 "$repo_dir/session/villode-logout" \
+            "$HOME/.local/bin/villode-logout"
+    fi
+    if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
+        # PATH-installed update.sh lives outside the release tree; keep the
+        # helper under XDG data so resolve_git_net_lib always finds it.
+        install -Dm644 "$repo_dir/lib/git-net.sh" "$data_home/release/lib/git-net.sh"
+        install -Dm644 "$repo_dir/lib/git-net.sh" "$data_home/lib/git-net.sh"
+    fi
     install -Dm755 "$repo_dir/session/villode-terminal" "$HOME/.local/bin/villode-terminal"
     install -Dm755 "$repo_dir/session/villode-explorer" "$HOME/.local/bin/villode-explorer"
     install -Dm644 "$manifest" "$data_home/components.tsv"
@@ -876,6 +1428,14 @@ caelestia_shell_is_running() {
 
 stop_caelestia_shell() {
     local qs deadline pid cmdline
+    local guard="$HOME/.local/bin/villode-caelestia-shell-guard"
+
+    # Pause supervisor first so it does not race a restart while we kill shell.
+    if [[ -x "$guard" ]]; then
+        # Only stop the guard process, not permanently disable across restarts:
+        # create disable briefly via guard stop, then leave binaries in place.
+        "$guard" stop >/dev/null 2>&1 || true
+    fi
 
     "$(caelestia_cli)" shell -k >/dev/null 2>&1 || true
     if qs="$(quickshell_cli 2>/dev/null)"; then
@@ -911,21 +1471,39 @@ stop_caelestia_shell() {
 }
 
 # Stop any previous instance, start a detached shell, and verify a live process
-# actually remains. Quickshell's -n/--no-duplicate path used by `caelestia shell`
-# can exit 0 with "already running" while the old process is still shutting
-# down; if that old process then exits, the desktop is left without a shell.
+# actually remains. Prefer the shell guard so post-install life also auto-restarts.
+# Quickshell's -n/--no-duplicate path can exit 0 with "already running" while the
+# old process is still shutting down.
 restart_caelestia_shell() {
     local log="${1:-$install_log}" attempt out rc=0 deadline attempt_log
+    local guard="$HOME/.local/bin/villode-caelestia-shell-guard"
 
     : >"$log"
+    # repo_dir is set in the full installer; extracted helper unit tests may omit it.
+    if [[ ! -x "$guard" && -n "${repo_dir:-}" &&
+          -f "$repo_dir/session/villode-caelestia-shell-guard" ]]; then
+        install -Dm755 "$repo_dir/session/villode-caelestia-shell-guard" "$guard"
+    fi
+
     for attempt in 1 2 3; do
         stop_caelestia_shell || true
+        if [[ -x "$guard" ]]; then
+            "$guard" stop >/dev/null 2>&1 || true
+        fi
         rc=0
         attempt_log="$(mktemp)"
         {
-            printf 'restart attempt %s: launching caelestia shell -d\n' "$attempt"
-            LANG="${LANG:-zh_CN.UTF-8}" LC_ALL="${LC_ALL:-$LANG}" \
-                "$(caelestia_cli)" shell -d
+            if [[ -x "$guard" ]]; then
+                printf 'restart attempt %s: launching shell guard --daemon\n' "$attempt"
+                LANG="${LANG:-zh_CN.UTF-8}" LC_ALL="${LC_ALL:-$LANG}" \
+                    WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+                    QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}" \
+                    "$guard" --daemon
+            else
+                printf 'restart attempt %s: launching caelestia shell -d\n' "$attempt"
+                LANG="${LANG:-zh_CN.UTF-8}" LC_ALL="${LC_ALL:-$LANG}" \
+                    "$(caelestia_cli)" shell -d
+            fi
         } >"$attempt_log" 2>&1 || rc=$?
         cat "$attempt_log" >>"$log"
         out="$(cat "$attempt_log" 2>/dev/null || true)"
@@ -938,13 +1516,13 @@ restart_caelestia_shell() {
             continue
         fi
         if (( rc != 0 )); then
-            printf 'restart attempt %s: caelestia shell -d exited %s\n' \
+            printf 'restart attempt %s: start exited %s\n' \
                 "$attempt" "$rc" >>"$log"
             sleep 0.2
             continue
         fi
 
-        deadline=$((SECONDS + 5))
+        deadline=$((SECONDS + 6))
         while ! caelestia_shell_is_running && (( SECONDS < deadline )); do
             sleep 0.1
         done
@@ -1001,6 +1579,9 @@ replace_existing_shells
 configure_hyprland_lua_autostart
 install_villode_session
 install_release_files
+# After packages are on PATH: detect system apps and write Caelestia defaults
+# without overwriting user choices in shell.json.
+configure_default_apps
 write_install_options
 publish_component_states
 
@@ -1008,21 +1589,22 @@ if ! $no_start; then
     # Update/install often runs from inside the shell settings UI. The old
     # process may still be exiting while the new start races with -n, so stop,
     # start and verify with retries instead of a single fire-and-forget launch.
+    # On TTY, adapt_for_tty_install already forced no_start=true.
     restart_caelestia_shell "$install_log" || {
         echo "组件已安装，但 Caelestia 自动启动失败。" >&2
-        echo "日志：$install_log" >&2
-        exit 70
+        echo "Components installed, but Caelestia failed to start." >&2
+        echo "日志 / log：$install_log" >&2
+        if ! is_graphical_session; then
+            echo "当前无图形会话：请重启后从 SDDM 进入 Villode Hyprland。" >&2
+            echo "No graphical session: reboot and select Villode Hyprland in SDDM." >&2
+            # Do not fail the whole install on TTY — files and session are ready.
+        else
+            exit 70
+        fi
     }
-    if [[ " ${selected[*]} " == *" dock "* ]]; then
-        "$HOME/.local/bin/villode-dock" --reload
+    if [[ " ${selected[*]} " == *" dock "* ]] && [[ -x "$HOME/.local/bin/villode-dock" ]]; then
+        "$HOME/.local/bin/villode-dock" --reload 2>/dev/null || true
     fi
 fi
 
-echo
-if $skip_shell; then
-    echo "安装完成：${selected[*]}"
-else
-    echo "安装完成：shell ${selected[*]}"
-fi
-echo "统一卸载命令：villode-caelestia-uninstall"
-echo "检查与更新命令：villode-caelestia-update"
+print_install_summary

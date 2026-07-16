@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Launch the terminal selected in Caelestia's default-app settings."""
+"""Launch a system terminal (Caelestia default-app setting, else PATH probe)."""
 
 import json
 import os
 import shutil
 from pathlib import Path
+
+# Never re-exec ourselves if shell.json points at this wrapper by mistake.
+SELF_NAMES = {"villode-terminal"}
 
 
 def configured_terminal():
@@ -16,13 +19,14 @@ def configured_terminal():
             isinstance(command, list)
             and command
             and all(isinstance(argument, str) and argument for argument in command)
+            and Path(command[0]).name not in SELF_NAMES
             and shutil.which(command[0])
         ):
             return command
     except (FileNotFoundError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
 
-    for candidate in ("alacritty", "foot", "kitty", "xterm"):
+    for candidate in ("alacritty", "kitty", "foot", "wezterm", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
         if shutil.which(candidate):
             return [candidate]
     raise SystemExit("No supported terminal emulator is installed.")

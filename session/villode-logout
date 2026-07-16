@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Clean Villode session logout: stop shell guard, then end UWSM compositor
+# so SDDM (or the display manager) is reached reliably.
+set -u
+
+# Stop supervisor so it does not resurrect the shell mid-logout.
+if command -v villode-caelestia-shell-guard >/dev/null 2>&1; then
+    villode-caelestia-shell-guard stop >/dev/null 2>&1 || true
+elif [[ -x "$HOME/.local/bin/villode-caelestia-shell-guard" ]]; then
+    "$HOME/.local/bin/villode-caelestia-shell-guard" stop >/dev/null 2>&1 || true
+fi
+
+# Prefer UWSM ordered stop (Villode Hyprland is started via uwsm).
+if command -v uwsm >/dev/null 2>&1; then
+    exec uwsm stop
+fi
+
+# Fallbacks when UWSM is missing.
+if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl dispatch exit >/dev/null 2>&1 || true
+fi
+if command -v loginctl >/dev/null 2>&1; then
+    exec loginctl terminate-session "${XDG_SESSION_ID:-self}"
+fi
+exit 1

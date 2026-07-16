@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# Keep Caelestia Shell running for the Villode Hyprland session.
+# Hyprland exec-once only starts once; if Quickshell crashes or exits,
+# this guard restarts it with backoff and proper Wayland/locale env.
+set -euo pipefail
+
+# Pid/disable live under XDG_STATE_HOME (keyed by HOME) so install/update
+# tests that override HOME/STATE do not stop the user's real session guard.
+# Shared XDG_RUNTIME_DIR alone would couple all home overrides together.
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/villode-caelestia"
+pid_file="$state_dir/shell-guard.pid"
+disable_file="$state_dir/shell-guard.disable"
+log_file="$state_dir/shell-guard.log"
+min_backoff=1
+max_backoff=30
+# If shell dies within this many seconds of start, treat as crash-loop.
+crash_window=15
+
+mkdir -p "$runtime_dir" "$state_dir"
+chmod 700 "$runtime_dir" 2>/dev/null || true
+
+log() {
+    local line
+    line="$(printf '%s %s\n' "$(date --iso-8601=seconds 2>/dev/null || date)" "$*")"
+    printf '%s\n' "$line" >>"$log_file" 2>/dev/null || true
+    # Keep log small
+    if [[ -f "$log_file" ]] && (( $(wc -c <"$log_file" 2>/dev/null || echo 0) > 200000 )); then
+        tail -n 400 "$log_file" >"${log_file}.tmp" 2>/dev/null && mv "${log_file}.tmp" "$log_file" || true
+    fi
+}
+
+caelestia_cli() {
+    if [[ -x "$HOME/.local/bin/caelestia" ]]; then
+        printf '%s\n' "$HOME/.local/bin/caelestia"
+    elif command -v caelestia >/dev/null 2>&1; then
+        command -v caelestia
+    else
+        return 1
+    fi
+}
+
+# Same idea as install.sh: live quickshell for caelestia config.
+shell_is_running() {
+    local pid cmdline
+    while IFS= read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *'-c caelestia'* ||
+              "$cmdline" == *'--config caelestia'* ||
+              "$cmdline" == *'/quickshell/caelestia'* ]]; then
+            return 0
+        fi
+    done < <(pgrep -u "$UID" -x quickshell 2>/dev/null || true)
+    while IFS= read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *'-c caelestia'* ||
+              "$cmdline" == *'--config caelestia'* ]]; then
+            return 0
+        fi
+    done < <(pgrep -u "$UID" -x qs 2>/dev/null || true)
+    return 1
+}
+
+guard_is_running() {
+    local pid
+    [[ -f "$pid_file" ]] || return 1
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    [[ -n "$pid" && -d "/proc/$pid" ]] || return 1
+    # Confirm it is our script
+    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'villode-caelestia-shell-guard' || return 1
+    # Alive and not ourselves in a weird way
+    kill -0 "$pid" 2>/dev/null
+}
+
+write_pid() {
+    printf '%s\n' "$$" >"$pid_file"
+}
+
+cleanup_pid() {
+    local pid
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$pid" == "$$" ]]; then
+        rm -f "$pid_file"
+    fi
+}
+
+prepare_env() {
+    # Prefer the compositor's Wayland display; fall back to common names.
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+        if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+            for d in wayland-1 wayland-0; do
+                if [[ -S "$XDG_RUNTIME_DIR/$d" ]]; then
+                    export WAYLAND_DISPLAY="$d"
+                    break
+                fi
+            done
+        fi
+    fi
+    export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+    export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-Hyprland}"
+    export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-Villode-Hyprland}"
+    # Force Wayland first; xcb alone was what crashed shell when DISPLAY was empty.
+    export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+    export LANG="${LANG:-zh_CN.UTF-8}"
+    export LC_ALL="${LC_ALL:-$LANG}"
+    # Avoid crash-loop "not restarting" if previous quickshell left a bad state
+    # — we are the outer supervisor.
+    export QS_NO_RELOAD_POPUP="${QS_NO_RELOAD_POPUP:-1}"
+}
+
+start_shell_once() {
+    local cli out rc=0
+    prepare_env
+    cli="$(caelestia_cli)" || {
+        log "error: caelestia CLI not found"
+        return 1
+    }
+    # If already running, nothing to do.
+    if shell_is_running; then
+        return 0
+    fi
+    out="$("$cli" shell -d 2>&1)" || rc=$?
+    if [[ -n "$out" ]]; then
+        log "start: $out"
+    fi
+    # "already running" is fine.
+    if grep -Fq 'An instance of this configuration is already running.' <<<"$out"; then
+        return 0
+    fi
+    if (( rc != 0 )); then
+        log "start failed rc=$rc"
+        return "$rc"
+    fi
+    # Brief wait for process to appear.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        shell_is_running && return 0
+        sleep 0.2
+    done
+    log "start returned success but shell process not found"
+    return 1
+}
+
+stop_shell() {
+    local cli pid cmdline
+    cli="$(caelestia_cli 2>/dev/null || true)"
+    if [[ -n "$cli" ]]; then
+        "$cli" shell -k >/dev/null 2>&1 || true
+    fi
+    if command -v qs >/dev/null 2>&1; then
+        qs -c caelestia kill --any-display >/dev/null 2>&1 || true
+        qs -c caelestia kill --any-display --newest >/dev/null 2>&1 || true
+    fi
+    while IFS= read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *'-c caelestia'* ||
+              "$cmdline" == *'--config caelestia'* ||
+              "$cmdline" == *'/quickshell/caelestia'* ]]; then
+            kill "$pid" >/dev/null 2>&1 || true
+        fi
+    done < <(pgrep -u "$UID" -x quickshell 2>/dev/null || true; pgrep -u "$UID" -x qs 2>/dev/null || true)
+}
+
+cmd_stop() {
+    # Only stop the guard that belongs to this HOME/STATE (pid_file path).
+    # Do not pkill every villode-caelestia-shell-guard on the machine.
+    : >"$disable_file"
+    if guard_is_running; then
+        local pid
+        pid="$(cat "$pid_file")"
+        kill "$pid" 2>/dev/null || true
+        local i
+        for i in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    stop_shell
+    rm -f "$pid_file" "$disable_file"
+    log "stopped by user"
+    echo "已停止 Caelestia Shell 守护进程。"
+}
+
+cmd_status() {
+    if guard_is_running; then
+        echo "guard: running (pid $(cat "$pid_file"))"
+    else
+        echo "guard: stopped"
+    fi
+    if shell_is_running; then
+        echo "shell: running"
+    else
+        echo "shell: stopped"
+    fi
+    [[ -f "$log_file" ]] && echo "log: $log_file"
+}
+
+cmd_run() {
+    if [[ -f "$disable_file" ]]; then
+        rm -f "$disable_file"
+    fi
+    if guard_is_running; then
+        # Another guard already owns the session.
+        local other
+        other="$(cat "$pid_file")"
+        if [[ "$other" != "$$" ]]; then
+            log "another guard already running (pid $other); exiting"
+            # Ensure shell is up even if we don't take over.
+            start_shell_once || true
+            exit 0
+        fi
+    fi
+    write_pid
+    trap cleanup_pid EXIT
+    trap 'log "signal received"; cleanup_pid; exit 0' INT TERM HUP
+
+    log "guard started (pid $$) WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-}"
+    local backoff=$min_backoff started_at=0 now=0
+
+    while true; do
+        if [[ -f "$disable_file" ]]; then
+            log "disable file present; exiting without restart"
+            cleanup_pid
+            exit 0
+        fi
+
+        # Wait until a Wayland display exists (session may still be starting).
+        prepare_env
+        if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+            log "waiting for WAYLAND_DISPLAY…"
+            sleep 1
+            continue
+        fi
+
+        if shell_is_running; then
+            backoff=$min_backoff
+            # Poll until it disappears.
+            while shell_is_running; do
+                if [[ -f "$disable_file" ]]; then
+                    log "disable while shell running; exiting"
+                    cleanup_pid
+                    exit 0
+                fi
+                sleep 2
+            done
+            log "shell exited"
+        fi
+
+        if [[ -f "$disable_file" ]]; then
+            log "disable before restart; exiting"
+            cleanup_pid
+            exit 0
+        fi
+
+        started_at=$(date +%s)
+        if start_shell_once; then
+            now=$(date +%s)
+            if (( now - started_at < crash_window )) && ! shell_is_running; then
+                log "shell died quickly; backoff ${backoff}s"
+                sleep "$backoff"
+                if (( backoff < max_backoff )); then
+                    backoff=$(( backoff * 2 ))
+                    (( backoff > max_backoff )) && backoff=$max_backoff
+                fi
+            else
+                backoff=$min_backoff
+                # Stay in outer loop; next iteration will wait on running shell.
+                sleep 1
+            fi
+        else
+            log "start failed; backoff ${backoff}s"
+            sleep "$backoff"
+            if (( backoff < max_backoff )); then
+                backoff=$(( backoff * 2 ))
+                (( backoff > max_backoff )) && backoff=$max_backoff
+            fi
+        fi
+    done
+}
+
+cmd_daemon() {
+    if guard_is_running; then
+        start_shell_once || true
+        exit 0
+    fi
+    # Detach: re-exec ourselves as long-running process.
+    nohup "$0" run >/dev/null 2>&1 &
+    # Wait briefly for pid file
+    local i
+    for i in $(seq 1 20); do
+        guard_is_running && exit 0
+        sleep 0.1
+    done
+    # Still try once even if pid file lag
+    start_shell_once || true
+    exit 0
+}
+
+usage() {
+    cat <<'EOF'
+用法：villode-caelestia-shell-guard [--daemon|run|stop|status|restart]
+
+  --daemon / daemon   后台启动守护（Hyprland exec-once 使用）
+  run                 前台运行守护循环
+  stop                停止守护与 Shell（更新/卸载用）
+  status              显示守护与 Shell 状态
+  restart             停止后重新守护启动
+EOF
+}
+
+main() {
+    local cmd="${1:-daemon}"
+    case "$cmd" in
+        -h|--help|help) usage; exit 0 ;;
+        --daemon|daemon|-d) cmd_daemon ;;
+        run|foreground) cmd_run ;;
+        stop|--stop|-k) cmd_stop ;;
+        status|--status) cmd_status ;;
+        restart|--restart)
+            cmd_stop
+            sleep 0.3
+            cmd_daemon
+            ;;
+        *)
+            usage >&2
+            exit 64
+            ;;
+    esac
+}
+
+main "$@"

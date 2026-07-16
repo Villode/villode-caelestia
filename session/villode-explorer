@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Launch the file manager selected in Caelestia's default-app settings."""
+"""Launch a system file manager (Caelestia default-app setting, else PATH probe)."""
 
 import json
 import os
 import shutil
 from pathlib import Path
+
+SELF_NAMES = {"villode-explorer"}
 
 
 def configured_explorer():
@@ -16,15 +18,19 @@ def configured_explorer():
             isinstance(command, list)
             and command
             and all(isinstance(argument, str) and argument for argument in command)
+            and Path(command[0]).name not in SELF_NAMES
             and shutil.which(command[0])
         ):
             return command
     except (FileNotFoundError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
 
-    for candidate in ("nautilus", "dolphin", "thunar", "nemo", "pcmanfm"):
+    for candidate in ("nautilus", "dolphin", "thunar", "nemo", "pcmanfm", "caja", "cosmic-files"):
         if shutil.which(candidate):
             return [candidate]
+    # Last resort: let the desktop portal / mime system pick something.
+    if shutil.which("xdg-open"):
+        return ["xdg-open", str(Path.home())]
     raise SystemExit("No supported file manager is installed.")
 
 

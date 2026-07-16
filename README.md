@@ -4,6 +4,8 @@
 
 本仓库提供统一安装入口。Caelestia Shell 本体来自 Villode 的受控 Fork 并始终安装；中文化、Dock、Desktop 和 Launcher 可以自由选择，不会强制捆绑。
 
+**English documentation:** [README.en.md](README.en.md)
+
 ## 组件
 
 | 组件 | 作用 | 独立仓库 |
@@ -25,9 +27,30 @@
 - Git
 - Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
 - 默认自动检测并补齐依赖，安装系统包时需要 `sudo` 权限
-- 独立会话由 UWSM 管理，Caelestia 的注销按钮会执行 `uwsm stop` 有序返回登录管理器
-- Arch 上自动补齐独立会话依赖时会安装 `alacritty`；Super+Return 和 Dock 会共同读取 Caelestia“默认应用”中的终端设置
+- 独立会话由 UWSM 管理；注销按钮执行 `villode-logout`（先停 Shell 守护，再 `uwsm stop`），有序返回登录管理器
+- 无桌面/最小系统也会尽量补齐：`hyprland`、`sddm`、**GTK3/GTK4**、`gtk4-layer-shell`、Qt6、音频与门户
+- 日常应用（可按系统已有包智能跳过）：终端（alacritty）、文件管理（thunar）、播放器（mpv）、看图（imv/loupe）、浏览器（优先 google-chrome，否则 firefox）
+- 中文：`fcitx5` + 拼音 + 中文字体；环境变量写入会话与 `~/.config/environment.d`
+- 默认应用写入 `~/.config/caelestia/shell.json` 的 `general.apps`（**仅在缺失或无效时**），并同步 `mimeapps.list`；用户在设置里改过的不会被覆盖
+- Super+Return / Dock 等读取 Caelestia「默认应用」中的真实系统命令（不是 villode-* 包装名）
 - Arch 系统没有 `yay`/`paru` 时，会自动安装 `base-devel`、`git` 和 `yay-bin`
+
+## 从 TTY / 无桌面安装
+
+适合只有字符终端、尚未装桌面的机器：
+
+```bash
+git clone https://github.com/u0n0u/villode-caelestia.git
+cd villode-caelestia
+./install.sh --all
+sudo reboot
+# 在 SDDM 选择 Villode Hyprland
+```
+
+安装器会检测当前是否在图形会话中：
+
+- **TTY / 无 Wayland**：自动跳过“立即启动 Shell/Dock”（没有合成器会失败），尽量安装并启用 SDDM，结束后提示重启。
+- **已在图形会话**：安装后可直接拉起/刷新组件。
 
 ## 交互式安装
 
@@ -37,7 +60,7 @@ cd villode-caelestia
 ./install.sh
 ```
 
-安装器会始终部署锁定的 Villode Caelestia Shell，并显示可选组件菜单。
+安装器会始终部署锁定的 Villode Caelestia Shell，并显示可选组件菜单。GitHub 较慢时会测速并让你选择镜像。
 
 ## 一键安装全部组件
 
@@ -105,7 +128,56 @@ cd villode-caelestia
 
 离线模式只使用已锁定且版本完全匹配的本地缓存，不会访问网络，也不会安装系统依赖。安装器会保存依赖、启动、Hyprland、独立会话、原生构建和离线模式，后续更新会复用这些选择。`--no-hyprland` 同时禁止写入用户会话和独立 Villode 会话的 Hyprland 集成。
 
+## Shell 自动守护
+
+独立会话通过 `villode-caelestia-shell-guard` 拉起 Caelestia Shell，而不是一次性的 `caelestia shell -d`。若 Quickshell 崩溃或退出，守护进程会按退避间隔自动重启，避免桌面只剩 Dock/壁纸、面板消失。
+
+```bash
+villode-caelestia-shell-guard status   # 查看守护与 Shell 状态
+villode-caelestia-shell-guard restart # 手动重启
+villode-caelestia-shell-guard stop    # 停止守护与 Shell（调试用）
+```
+
+日志：`~/.local/state/villode-caelestia/shell-guard.log`
+
 ## 更新与修复
+
+设置页「Villode 更新」与命令行更新器默认走 GitHub。若访问 GitHub 较慢或不可达，安装器会按顺序尝试镜像（默认 `kkgithub.com`、`ghproxy.net`），并对每次 git 网络操作施加超时；仍失败时检查更新会回退到本地已安装的发布渠道，而不是一直卡住。
+
+安装时（交互）会测速并让你选择更新通道，例如：
+
+```
+正在测试 GitHub 访问通道（每个最多 8s）…
+
+  ✓  kkgithub.com（镜像）           0.8s
+  ✓  ghproxy.net（代理）            1.3s
+  ✓  github.com（直连）             3.0s
+
+请选择之后安装/更新使用的通道：
+  a. 自动（按速度排序，失败自动切换）  [推荐]
+  1. 仅优先 kkgithub.com（镜像）（0.8s，失败仍尝试其他）
+  2. …
+```
+
+选择会写入 `~/.local/state/villode-caelestia/install-options`，之后的 `villode-caelestia-update` 会沿用。
+
+```bash
+./install.sh --all                      # 非交互：测速后自动选最快优先
+./install.sh --github-source kkgithub.com
+./install.sh --probe-github             # 强制再测速并选择
+./install.sh --skip-github-probe        # 跳过测速，用已保存/默认
+```
+
+可选环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `VILLODE_GITHUB_SOURCE` | `auto` / `github.com` / `kkgithub.com` / `ghproxy.net` … |
+| `VILLODE_GITHUB_MIRRORS` | 逗号/空格分隔的镜像列表，默认 `kkgithub.com,ghproxy.net` |
+| `VILLODE_PREFER_GITHUB_DIRECT=1` | 优先直连 `github.com`，再试镜像 |
+| `VILLODE_GIT_TIMEOUT` | 单次 git 网络操作超时秒数，默认 `12` |
+| `VILLODE_PROBE_TIMEOUT` | 测速时每个通道超时秒数，默认 `8` |
+| `VILLODE_UPDATE_REMOTE` | 强制指定更新渠道远程 URL |
 
 检查全部组件的真实安装版本：
 

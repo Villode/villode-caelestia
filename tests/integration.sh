@@ -26,6 +26,7 @@ test_update_repairs_real_revision() {
         "$root/data/villode-caelestia/release" \
         "$root/data/villode-caelestia/components/dock"
     install -m755 "$repo_dir/install.sh" "$root/data/villode-caelestia/release/install.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$root/data/villode-caelestia/release/lib/git-net.sh"
     printf '%s\n' \
         $'# id\trepository\tcommit\tname' \
         $'shell\thttps://invalid/shell\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tShell' \
@@ -68,6 +69,7 @@ test_offline_no_hyprland_installs_successfully() {
     install -m755 "$repo_dir/install.sh" "$channel/install.sh"
     install -m755 "$repo_dir/uninstall.sh" "$channel/uninstall.sh"
     install -m755 "$repo_dir/update.sh" "$channel/update.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$channel/lib/git-net.sh"
     cp -a "$repo_dir/session/." "$channel/session/"
 
     git -C "$shell_source" init -q
@@ -132,6 +134,7 @@ test_update_reuses_install_options() {
     printf '#!/usr/bin/env bash\n# supports --skip-shell\nprintf "%%s\\n" "$@" > "%s"\n' "$args_file" \
         > "$root/data/villode-caelestia/release/install.sh"
     chmod +x "$root/data/villode-caelestia/release/install.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$root/data/villode-caelestia/release/lib/git-net.sh"
     printf '%s\n' \
         $'# id\trepository\tcommit\tname' \
         $'dock\thttps://invalid/dock\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tDock' \
@@ -166,6 +169,7 @@ test_preflight_failure_preserves_existing_desktop() {
     mkdir -p "$channel" "$shell_source" "$zh_source" \
         "$root/home/.config/waybar" "$root/state" "$root/data"
     install -m755 "$repo_dir/install.sh" "$channel/install.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$channel/lib/git-net.sh"
 
     git -C "$shell_source" init -q
     mkdir -p "$shell_source"/{assets,components,i18n,modules,services,utils}
@@ -242,7 +246,7 @@ test_partial_uninstall_rebuilds_session() {
     : > "$state/session-managed"
     printf '%s\n' '{"present":true,"value":["loginctl","terminate-user"]}' \
         > "$state/logout-backup.json"
-    printf '%s\n' '{"session":{"commands":{"logout":["uwsm","stop"]}}}' \
+    printf '%s\n' '{"session":{"commands":{"logout":["villode-logout"]}}}' \
         > "$home/.config/caelestia/shell.json"
     printf '%s\n' keep > "$state/migration-backups/keep/sentinel"
     : > "$home/.local/bin/villode-caelestia-update"
@@ -250,7 +254,7 @@ test_partial_uninstall_rebuilds_session() {
 
     HOME="$home" XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
         PATH="$fake:$PATH" "$repo_dir/uninstall.sh" --components dock
-    grep -q 'exec-once = caelestia shell -d' \
+    grep -qE 'exec-once = (villode-caelestia-shell-guard|caelestia shell -d)' \
         "$home/.config/villode-hyprland/hyprland.conf" || fail 'Shell 自启动被误删'
     if grep -q 'exec-once = villode-dock --daemon' \
         "$home/.config/villode-hyprland/hyprland.conf"; then
@@ -308,6 +312,7 @@ test_update_skips_missing_components_by_default() {
     printf '#!/usr/bin/env bash\n# supports --skip-shell\nprintf "%%s\\n" "$@" > "%s"\n' "$args_file" \
         > "$root/data/villode-caelestia/release/install.sh"
     chmod +x "$root/data/villode-caelestia/release/install.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$root/data/villode-caelestia/release/lib/git-net.sh"
     printf '%s\n' \
         $'# id\trepository\tcommit\tname' \
         $'dock\thttps://invalid/dock\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tDock' \
@@ -441,9 +446,104 @@ SH
     kill "$(cat "$pid_file")" 2>/dev/null || true
 }
 
+test_github_source_persisted_in_install_options() {
+    local root="$work/github-source" channel cache shell_source shell_commit opts
+    channel="$root/channel"
+    cache="$root/cache/villode-caelestia/sources"
+    shell_source="$cache/shell"
+    mkdir -p "$channel/session" "$shell_source" "$root/home" "$root/state" "$root/data"
+    install -m755 "$repo_dir/install.sh" "$channel/install.sh"
+    install -m755 "$repo_dir/uninstall.sh" "$channel/uninstall.sh"
+    install -m755 "$repo_dir/update.sh" "$channel/update.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$channel/lib/git-net.sh"
+    cp -a "$repo_dir/session/." "$channel/session/"
+
+    git -C "$shell_source" init -q
+    mkdir -p "$shell_source"/{assets,components,i18n,modules,services,utils}
+    printf '%s\n' qm > "$shell_source/i18n/qml_zh_CN.qm"
+    printf '%s\n' 'Item {}' > "$shell_source/shell.qml"
+    printf '%s\n' v1 > "$shell_source/UPSTREAM_VERSION"
+    cat > "$shell_source/install-villode.sh" <<'SH'
+#!/usr/bin/env bash
+set -e
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia"
+printf 'Revision: %s\n' "$(git rev-parse HEAD)" \
+  > "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/caelestia/.villode-managed"
+SH
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$shell_source/uninstall-villode.sh"
+    chmod +x "$shell_source/install-villode.sh" "$shell_source/uninstall-villode.sh"
+    git -C "$shell_source" add .
+    git -C "$shell_source" -c user.name=test -c user.email=test@example.invalid \
+        commit -qm shell
+    shell_commit="$(git -C "$shell_source" rev-parse HEAD)"
+    printf '# id\trepository\tcommit\tname\n' > "$channel/components.tsv"
+    printf 'shell\thttps://invalid/shell\t%s\tShell\n' "$shell_commit" \
+        >> "$channel/components.tsv"
+
+    HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
+    XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+    XDG_CACHE_HOME="$root/cache" \
+        "$channel/install.sh" --components shell --offline --no-deps \
+        --no-start --no-hyprland --no-native-build --keep-existing \
+        --github-source kkgithub.com >/dev/null
+    opts="$root/state/villode-caelestia/install-options"
+    [[ -f "$opts" ]] || fail 'install-options 未写入'
+    grep -Fxq 'github_source=kkgithub.com' "$opts" \
+        || fail "期望 github_source=kkgithub.com，实际：$(grep github_source "$opts" || true)"
+    grep -q '^github_mirrors=' "$opts" || fail 'install-options 缺少 github_mirrors'
+}
+
+test_check_json_falls_back_when_github_unreachable() {
+    local root="$work/net-fallback" json source
+    mkdir -p "$root/home/.local/bin" \
+        "$root/config/quickshell/caelestia" \
+        "$root/state/villode-caelestia" \
+        "$root/state/villode-caelestia-shell" \
+        "$root/data/villode-caelestia/release" \
+        "$root/data/villode-caelestia/components/dock" \
+        "$root/cache"
+    install -m755 "$repo_dir/install.sh" "$root/data/villode-caelestia/release/install.sh"
+    install -Dm644 "$repo_dir/lib/git-net.sh" "$root/data/villode-caelestia/release/lib/git-net.sh"
+    printf '%s\n' \
+        $'# id\trepository\tcommit\tname' \
+        $'dock\thttps://github.com/u0n0u/villode-dock.git\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tDock' \
+        > "$root/data/villode-caelestia/release/components.tsv"
+    # Online mode, but force every network attempt to fail quickly and have no
+    # usable mirrors so refresh_channel must use the installed release tree.
+    printf '%s\n' 'offline=no' > "$root/state/villode-caelestia/install-options"
+    printf '%s\t%s\t%s\n' dock bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb Dock \
+        > "$root/state/villode-caelestia/dock.tsv"
+    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        > "$root/data/villode-caelestia/components/dock/revision"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$root/home/.local/bin/villode-dock"
+    chmod +x "$root/home/.local/bin/villode-dock"
+
+    json="$(
+        HOME="$root/home" \
+        XDG_CONFIG_HOME="$root/config" \
+        XDG_STATE_HOME="$root/state" \
+        XDG_DATA_HOME="$root/data" \
+        XDG_CACHE_HOME="$root/cache" \
+        VILLODE_GIT_TIMEOUT=1 \
+        VILLODE_GITHUB_MIRRORS="127.0.0.1:9" \
+        VILLODE_PREFER_GITHUB_DIRECT=0 \
+        VILLODE_UPDATE_REMOTE="https://127.0.0.1:9/u0n0u/villode-caelestia.git" \
+            "$repo_dir/update.sh" --check-json 2>/dev/null
+    )"
+    source="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["channelSource"])' <<< "$json")"
+    [[ "$source" == offline-release || "$source" == stale-cache ]] \
+        || fail "GitHub 不可达时应回退本地渠道，实际 channelSource=$source"
+    python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("networkDegraded") is True' <<< "$json" \
+        || fail 'networkDegraded 应为 true'
+    python3 -c 'import json,sys; d=json.load(sys.stdin); assert any(c["id"]=="dock" for c in d["components"])' <<< "$json" \
+        || fail '回退检查应仍返回组件列表'
+}
+
 test_update_repairs_real_revision
 test_update_reuses_install_options
 test_update_skips_missing_components_by_default
+test_github_source_persisted_in_install_options
+test_check_json_falls_back_when_github_unreachable
 test_preflight_failure_preserves_existing_desktop
 test_offline_no_hyprland_installs_successfully
 test_operation_lock_rejects_concurrent_update
