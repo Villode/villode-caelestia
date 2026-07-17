@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Check / run Arch system package upgrades for Villode settings UI.
+# This is SEPARATE from villode-caelestia-update (component channel).
+# - check: never modifies the system (uses checkupdates / pacman -Qu)
+# - apply: interactive pacman -Syu with a clear banner (needs sudo)
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+用法 / Usage：villode-system-update [--check|--check-json|--apply]
+
+  --check       列出可升级系统包（制表符：name old new）
+  --check-json  JSON（供设置页）
+  --apply       交互式执行 pacman -Syu（需确认 + sudo）
+
+说明 / Notes：
+  - 这是 Arch 滚动系统更新，不是 Villode 组件更新。
+  - This upgrades the whole system (kernel, drivers, libs…), not only Villode.
+  - Villode 组件请用：villode-caelestia-update
+EOF
+}
+
+mode=check-json
+while (($#)); do
+    case "$1" in
+        --check) mode=check ;;
+        --check-json) mode=check-json ;;
+        --apply) mode=apply ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 64 ;;
+    esac
+    shift
+done
+
+# Parse lines from checkupdates or pacman -Qu into name old new
+# Formats:
+#   checkupdates: "pkg old -> new"
+#   pacman -Qu:   "pkg old -> new" or "pkg old-version -> new-version"
+collect_upgrades() {
+    local line name old new rest
+    packages=()
+    if command -v checkupdates >/dev/null 2>&1; then
+        # checkupdates uses a temp DB; does not require root; may need network.
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            # pkg old -> new
+            if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+\-\>[[:space:]]+([^[:space:]]+) ]]; then
+                packages+=("${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[2]}"$'\t'"${BASH_REMATCH[3]}")
+            fi
+        done < <(checkupdates 2>/dev/null || true)
+    fi
+    if ((${#packages[@]} == 0)) && command -v pacman >/dev/null 2>&1; then
+        # Fallback: needs a recent -Sy; may be empty without sync.
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+\-\>[[:space:]]+([^[:space:]]+) ]]; then
+                packages+=("${BASH_REMATCH[1]}"$'\t'"${BASH_REMATCH[2]}"$'\t'"${BASH_REMATCH[3]}")
+            fi
+        done < <(pacman -Qu 2>/dev/null || true)
+    fi
+}
+
+if [[ "$mode" == apply ]]; then
+    echo
+    echo "════════════════════════════════════════════════════════"
+    echo "  系统软件包更新 / System package upgrade (Arch rolling)"
+    echo "════════════════════════════════════════════════════════"
+    echo
+    echo "这将执行：  sudo pacman -Syu"
+    echo "This will run: sudo pacman -Syu"
+    echo
+    echo "可能更新：内核、驱动、桌面库、浏览器等全部过期软件包。"
+    echo "May upgrade: kernel, drivers, desktop libs, browsers — everything outdated."
+    echo
+    echo "这与「Villode 组件更新」无关；组件请用 villode-caelestia-update。"
+    echo "This is NOT the Villode component channel."
+    echo
+    echo "风险 / Risk：滚动更新偶发 breakage；建议先读完列表再确认。"
+    echo "Rolling upgrades can occasionally break the system. Review the list first."
+    echo
+    if ! command -v pacman >/dev/null 2>&1; then
+        echo "未找到 pacman。此功能仅适用于 Arch / CachyOS 等。" >&2
+        exit 69
+    fi
+    collect_upgrades
+    if ((${#packages[@]} == 0)); then
+        echo "正在同步软件库并检查（可能需要网络）…"
+        echo "Syncing databases and checking (network may be required)…"
+        sudo pacman -Sy
+        collect_upgrades
+    fi
+    if ((${#packages[@]} == 0)); then
+        echo "系统软件包已是最新（或无法检查到更新）。"
+        echo "System packages appear up to date (or check returned nothing)."
+        echo
+        read -r -p "仍要运行 sudo pacman -Syu 吗？[y/N] / Run -Syu anyway? [y/N] " ans || ans=n
+        [[ "$ans" == y || "$ans" == Y ]] || exit 0
+    else
+        echo "将升级 ${#packages[@]} 个软件包 / packages to upgrade："
+        echo
+        printf '  %-36s %s → %s\n' "包名 / package" "当前 / old" "新 / new"
+        local_line=""
+        for local_line in "${packages[@]}"; do
+            IFS=$'\t' read -r name old new <<<"$local_line"
+            printf '  %-36s %s → %s\n' "$name" "$old" "$new"
+        done | head -n 80
+        if ((${#packages[@]} > 80)); then
+            echo "  … 另有 $((${#packages[@]} - 80)) 个未列出 / more not shown"
+        fi
+        echo
+        read -r -p "确认执行系统滚动更新？[y/N] / Proceed with full system upgrade? [y/N] " ans || ans=n
+        [[ "$ans" == y || "$ans" == Y ]] || { echo "已取消 / Cancelled."; exit 0; }
+    fi
+    echo
+    sudo pacman -Syu
+    code=$?
+    echo
+    if [[ $code -eq 0 ]]; then
+        echo "系统更新完成 / System upgrade finished."
+    else
+        echo "系统更新失败，退出码 $code / Upgrade failed, exit $code" >&2
+    fi
+    exit "$code"
+fi
+
+# check / check-json
+collect_upgrades
+if [[ "$mode" == check ]]; then
+    for line in "${packages[@]+"${packages[@]}"}"; do
+        printf '%s\n' "$line"
+    done
+    exit 0
+fi
+
+# JSON
+python3 - "$mode" <<'PY' "${packages[@]+"${packages[@]}"}"
+import json, sys
+from datetime import datetime
+
+# argv[1] is mode from python - "$mode", then packages as remaining — actually
+# we pass packages via env to avoid arg limits
+PY
+# Use env file for package lines to keep it simple
+tmp="$(mktemp)"
+if ((${#packages[@]})); then
+    printf '%s\n' "${packages[@]}" >"$tmp"
+else
+    : >"$tmp"
+fi
+python3 - "$tmp" <<'PY'
+import json, sys
+from datetime import datetime
+from pathlib import Path
+
+path = Path(sys.argv[1])
+packages = []
+for line in path.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split("\t")
+    while len(parts) < 3:
+        parts.append("")
+    name, old, new = parts[0], parts[1], parts[2]
+    packages.append({"name": name, "old": old, "new": new})
+
+# Highlight potentially disruptive packages for the UI warning strip.
+risky_keywords = (
+    "linux", "nvidia", "mesa", "systemd", "glibc", "gcc", "llvm",
+    "hyprland", "qt6", "gtk4", "pipewire", "nvidia", "amd-ucode", "intel-ucode",
+)
+risky = []
+for p in packages:
+    n = p["name"].lower()
+    if any(k in n for k in risky_keywords):
+        risky.append(p["name"])
+
+out = {
+    "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    "packageCount": len(packages),
+    "packages": packages[:200],  # cap for UI
+    "truncated": len(packages) > 200,
+    "riskyPackages": risky[:40],
+    "kind": "system",
+    "summary": (
+        f"{len(packages)} system package(s) can be upgraded (Arch rolling: pacman -Syu)"
+        if packages
+        else "System packages appear up to date"
+    ),
+    "summaryZh": (
+        f"有 {len(packages)} 个系统软件包可升级（Arch 滚动：pacman -Syu）"
+        if packages
+        else "系统软件包已是最新"
+    ),
+    "warning": (
+        "Full system upgrade may include kernel/drivers/libraries. "
+        "This is separate from Villode components. Review the list before applying."
+    ),
+    "warningZh": (
+        "完整系统更新可能包含内核、驱动与基础库，与 Villode 组件更新无关。"
+        "请先查看列表再确认执行。"
+    ),
+    "command": "sudo pacman -Syu",
+}
+print(json.dumps(out, ensure_ascii=False, indent=2))
+PY
+rm -f "$tmp"

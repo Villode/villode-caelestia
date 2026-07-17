@@ -1328,7 +1328,7 @@ install_release_files() {
         for file in villode-hyprland.conf start-villode-hyprland \
             villode-hyprland-compositor villode-hyprland.desktop \
             villode-terminal villode-explorer villode-caelestia-shell-guard \
-            villode-logout; do
+            villode-logout villode-system-update; do
             [[ -f "$repo_dir/session/$file" ]] || continue
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
@@ -1340,6 +1340,8 @@ install_release_files() {
             2>/dev/null || true
         [[ -f "$release_dir/session/villode-logout" ]] && \
             chmod 755 "$release_dir/session/villode-logout"
+        [[ -f "$release_dir/session/villode-system-update" ]] && \
+            chmod 755 "$release_dir/session/villode-system-update"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
@@ -1351,6 +1353,10 @@ install_release_files() {
     if [[ -f "$repo_dir/session/villode-logout" ]]; then
         install -Dm755 "$repo_dir/session/villode-logout" \
             "$HOME/.local/bin/villode-logout"
+    fi
+    if [[ -f "$repo_dir/session/villode-system-update" ]]; then
+        install -Dm755 "$repo_dir/session/villode-system-update" \
+            "$HOME/.local/bin/villode-system-update"
     fi
     if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
         # PATH-installed update.sh lives outside the release tree; keep the
