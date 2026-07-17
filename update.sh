@@ -467,9 +467,17 @@ while IFS=$'\t' read -r id repo latest name; do
 
     if [[ "$mode" == check-json ]]; then
         ensure_component_git_meta "$id" "$repo" "$installed" "$latest"
+        # Cursor is packaged from the same caelestia-shell pin as Shell — reuse
+        # the shell git cache for dates/changelog when cursor's cache is shallow.
+        if [[ "$id" == cursor ]]; then
+            ensure_component_git_meta shell "$repo" "$installed" "$latest"
+        fi
         src_dir="$(component_source_dir "$id" || true)"
         # Prefer the canonical sources cache after ensure_component_git_meta.
         [[ -d "$sources_home/$id/.git" ]] && src_dir="$sources_home/$id"
+        if [[ "$id" == cursor && -d "$sources_home/shell/.git" ]]; then
+            src_dir="$sources_home/shell"
+        fi
         installed_meta="$(git_commit_meta "$src_dir" "$installed")"
         latest_meta="$(git_commit_meta "$src_dir" "$latest")"
         installed_at="${installed_meta%%|*}"
@@ -498,10 +506,34 @@ while IFS=$'\t' read -r id repo latest name; do
         if [[ -z "$changes" ]]; then
             if [[ "$status" == "有更新" && -n "$latest_subject" ]]; then
                 changes="$latest_subject"
+            elif [[ "$status" == "有更新" ]]; then
+                case "$id" in
+                    shell)
+                        changes="更新桌面 Shell（设置、面板、通知等）|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    cursor)
+                        changes="与 Shell 同源，随 Shell 一并更新（指针放大）|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    zh)
+                        changes="更新简体中文翻译包|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    dock)
+                        changes="更新 Dock|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    desktop)
+                        changes="更新桌面层 / 壁纸|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    launcher)
+                        changes="更新应用启动器|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                    *)
+                        changes="组件有可用更新|锁定版本 ${installed:0:7} → ${latest:0:7}"
+                        ;;
+                esac
             elif [[ "$status" == "未安装" ]]; then
                 case "$id" in
                     cursor)
-                        changes="Mac 风格晃动定位指针；未安装时可在此安装"
+                        changes="Mac 风格晃动定位指针；源码随 Shell 提供，可单独安装"
                         ;;
                     zh)
                         changes="Caelestia 界面简体中文翻译包"
@@ -530,11 +562,17 @@ while IFS=$'\t' read -r id repo latest name; do
                     shell)
                         changes="本地 Shell 安装标记不一致，请重新安装以修复"
                         ;;
+                    cursor)
+                        changes="指针放大安装不完整，将随修复流程重装（与 Shell 同源）"
+                        ;;
                     *)
                         changes="本地安装状态不完整，请重新安装以修复"
                         ;;
                 esac
             fi
+        elif [[ "$id" == cursor && "$status" == "有更新" ]]; then
+            # Always clarify cursor ships with the shell pin even when git notes exist.
+            changes="与 Shell 同源，随 Shell 一并更新|${changes}"
         fi
         # row: id name installed_short latest_short status installed_full latest_full installed_at latest_at changes_pipe
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
