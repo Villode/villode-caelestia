@@ -36,7 +36,7 @@ On a **minimal / TTY** machine the installer (with default `--with-deps`) will t
 - Compositor & session: `hyprland`, `uwsm`, **`sddm`**, portals, PipeWire, NetworkManager  
 - UI toolkits: **GTK3 / GTK4**, `gtk4-layer-shell`, Qt6 (needed by Dock/Desktop/Shell stack)  
 - Daily apps (if missing): terminal (`alacritty`), file manager (`thunar`), player (`mpv`), image viewer (`imv`/`loupe`), browser (`google-chrome` via AUR or `firefox`)  
-- Chinese input (when zh or full session): `fcitx5` + pinyin + CJK fonts  
+- Chinese input (when zh or full session): `fcitx5` + pinyin + CJK fonts. On Wayland **do not** set `GTK_IM_MODULE` (use text-input-v3); UWSM `env` unsets any stale value from the long-lived `user@` manager; session startup avoids `dbus-update-activation-environment --all`
 
 If a package is unavailable, it is skipped with a message instead of aborting the whole install.
 
