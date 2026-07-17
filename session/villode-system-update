@@ -61,22 +61,32 @@ collect_upgrades() {
 }
 
 if [[ "$mode" == apply ]]; then
+    zh=0
+    case "${LANG:-}${LC_ALL:-}${LC_MESSAGES:-}" in
+        zh*|zh_*|*.UTF-8) [[ "${LANG:-}" == zh* || "${LC_ALL:-}" == zh* || "${LC_MESSAGES:-}" == zh* ]] && zh=1 ;;
+    esac
+    # Prefer Chinese when UI language is Chinese.
+    case "${LANG:-}" in zh*|zh_*) zh=1 ;; esac
     echo
-    echo "════════════════════════════════════════════════════════"
-    echo "  系统软件包更新 / System package upgrade (Arch rolling)"
-    echo "════════════════════════════════════════════════════════"
-    echo
-    echo "这将执行：  sudo pacman -Syu"
-    echo "This will run: sudo pacman -Syu"
-    echo
-    echo "可能更新：内核、驱动、桌面库、浏览器等全部过期软件包。"
-    echo "May upgrade: kernel, drivers, desktop libs, browsers — everything outdated."
-    echo
-    echo "这与「Villode 组件更新」无关；组件请用 villode-caelestia-update。"
-    echo "This is NOT the Villode component channel."
-    echo
-    echo "风险 / Risk：滚动更新偶发 breakage；建议先读完列表再确认。"
-    echo "Rolling upgrades can occasionally break the system. Review the list first."
+    if [[ "$zh" == 1 ]]; then
+        echo "════════════════════════════════════════"
+        echo "  系统软件包更新（Arch 滚动）"
+        echo "════════════════════════════════════════"
+        echo
+        echo "将执行：sudo pacman -Syu"
+        echo "可能更新：内核、驱动、桌面库、浏览器等全部过期软件包。"
+        echo "这与「Villode 组件更新」无关。"
+        echo "风险：滚动更新偶发异常，请先查看列表再确认。"
+    else
+        echo "════════════════════════════════════════"
+        echo "  System package upgrade (Arch rolling)"
+        echo "════════════════════════════════════════"
+        echo
+        echo "Will run: sudo pacman -Syu"
+        echo "May upgrade: kernel, drivers, libs, browsers — all outdated packages."
+        echo "This is NOT the Villode component channel."
+        echo "Risk: rolling upgrades can break systems. Review the list first."
+    fi
     echo
     if ! command -v pacman >/dev/null 2>&1; then
         echo "未找到 pacman。此功能仅适用于 Arch / CachyOS 等。" >&2
