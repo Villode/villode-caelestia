@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Date/time/timezone helpers for Villode settings (Language & region).
+# Privileged actions use pkexec when available, else sudo.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+用法：villode-datetime <命令>
+
+  status-json              当前时间/时区/NTP 状态（JSON）
+  list-timezones [关键词]  时区列表（每行一个）
+  set-timezone <区域>      设置时区（需权限）
+  set-ntp <on|off>         开关网络时间同步（需权限）
+  set-time <ISO或字符串>   手动设置系统时间（需权限；通常会关 NTP）
+
+示例：
+  villode-datetime status-json
+  villode-datetime list-timezones Asia
+  villode-datetime set-timezone Asia/Shanghai
+  villode-datetime set-ntp on
+  villode-datetime set-time '2026-07-17 18:00:00'
+EOF
+}
+
+run_priv() {
+    if command -v pkexec >/dev/null 2>&1; then
+        pkexec "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+cmd_status_json() {
+    command -v timedatectl >/dev/null 2>&1 || {
+        echo '{"error":"timedatectl missing"}' >&2
+        exit 69
+    }
+    local tz ntp sync localrtc local_time utc_time
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+    ntp="$(timedatectl show -p NTP --value 2>/dev/null || true)"
+    sync="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+    localrtc="$(timedatectl show -p LocalRTC --value 2>/dev/null || true)"
+    local_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    utc_time="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    # Fallback parse from timedatectl status if show fails on older systems
+    if [[ -z "$tz" ]]; then
+        tz="$(timedatectl status 2>/dev/null | awk -F': ' '/Time zone/{print $2}' | awk '{print $1}')"
+    fi
+    python3 - <<PY
+import json
+print(json.dumps({
+    "timezone": """${tz}""" or "",
+    "ntp": """${ntp}""".lower() in ("yes", "true", "1", "on"),
+    "synchronized": """${sync}""".lower() in ("yes", "true", "1", "on"),
+    "localRTC": """${localrtc}""".lower() in ("yes", "true", "1", "on"),
+    "localTime": """${local_time}""",
+    "utcTime": """${utc_time}""",
+}, ensure_ascii=False, indent=2))
+PY
+}
+
+cmd_list_timezones() {
+    local q="${1:-}"
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        exit 69
+    fi
+    if [[ -n "$q" ]]; then
+        timedatectl list-timezones 2>/dev/null | grep -Fi -- "$q" || true
+    else
+        # Common first, then full list is huge — still output full for search UI
+        timedatectl list-timezones 2>/dev/null || true
+    fi
+}
+
+cmd_set_timezone() {
+    local tz="${1:-}"
+    [[ -n "$tz" ]] || { echo "需要时区，例如 Asia/Shanghai" >&2; exit 64; }
+    if ! timedatectl list-timezones 2>/dev/null | grep -Fxq -- "$tz"; then
+        echo "未知时区：$tz" >&2
+        exit 64
+    fi
+    run_priv timedatectl set-timezone "$tz"
+    echo "时区已设为 $tz"
+}
+
+cmd_set_ntp() {
+    local v="${1:-}"
+    case "$v" in
+        on|true|1|yes) run_priv timedatectl set-ntp true; echo "已开启网络时间同步" ;;
+        off|false|0|no) run_priv timedatectl set-ntp false; echo "已关闭网络时间同步" ;;
+        *) echo "用法：set-ntp on|off" >&2; exit 64 ;;
+    esac
+}
+
+cmd_set_time() {
+    local t="${1:-}"
+    [[ -n "$t" ]] || { echo "需要时间字符串" >&2; exit 64; }
+    # timedatectl set-time requires NTP off on many systems
+    run_priv timedatectl set-ntp false || true
+    run_priv timedatectl set-time "$t"
+    echo "系统时间已设为 $t（网络同步已关闭，需要可再打开）"
+}
+
+main() {
+    local cmd="${1:-}"
+    shift || true
+    case "$cmd" in
+        ""|-h|--help|help) usage; exit 0 ;;
+        status-json) cmd_status_json ;;
+        list-timezones) cmd_list_timezones "${1:-}" ;;
+        set-timezone) cmd_set_timezone "${1:-}" ;;
+        set-ntp) cmd_set_ntp "${1:-}" ;;
+        set-time) cmd_set_time "$*" ;;
+        *) usage >&2; exit 64 ;;
+    esac
+}
+
+main "$@"

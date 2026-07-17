@@ -280,6 +280,7 @@ if ! any_component_installed; then
         "$HOME/.local/bin/villode-caelestia-shell-guard" \
         "$HOME/.local/bin/villode-logout" \
         "$HOME/.local/bin/villode-system-update" \
+        "$HOME/.local/bin/villode-datetime" \
         "$HOME/.local/bin/villode-terminal" \
         "$HOME/.local/bin/villode-explorer"
     # The outer flock process still owns the unlinked inode until this script
