@@ -1329,7 +1329,11 @@ install_release_files() {
             villode-hyprland-compositor villode-hyprland.desktop \
             villode-terminal villode-explorer villode-caelestia-shell-guard \
             villode-logout villode-system-update villode-datetime \
-            villode-screenshot-editor swappy-villode caelestia-gtk-sync caelestia-qt-sync; do
+            villode-screenshot-editor swappy-villode caelestia-gtk-sync caelestia-qt-sync \
+            villode-files-fm villode-files-fm.desktop \
+            xdg-desktop-portal-villode xdg-desktop-portal-villode.service \
+            org.freedesktop.impl.portal.desktop.villode.service \
+            villode.portal portals.conf.villode; do
             [[ -f "$repo_dir/session/$file" ]] || continue
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
@@ -1353,6 +1357,10 @@ install_release_files() {
             chmod 755 "$release_dir/session/caelestia-gtk-sync"
         [[ -f "$release_dir/session/caelestia-qt-sync" ]] && \
             chmod 755 "$release_dir/session/caelestia-qt-sync"
+        [[ -f "$release_dir/session/villode-files-fm" ]] && \
+            chmod 755 "$release_dir/session/villode-files-fm"
+        [[ -f "$release_dir/session/xdg-desktop-portal-villode" ]] && \
+            chmod 755 "$release_dir/session/xdg-desktop-portal-villode"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
@@ -1400,6 +1408,58 @@ install_release_files() {
     fi
     install -Dm755 "$repo_dir/session/villode-terminal" "$HOME/.local/bin/villode-terminal"
     install -Dm755 "$repo_dir/session/villode-explorer" "$HOME/.local/bin/villode-explorer"
+
+    # QML file manager IPC wrapper (opt-in as default explorer via shell.json / mimeapps)
+    if [[ -f "$repo_dir/session/villode-files-fm" ]]; then
+        install -Dm755 "$repo_dir/session/villode-files-fm" "$HOME/.local/bin/villode-files-fm"
+    fi
+    if [[ -f "$repo_dir/session/villode-files-fm.desktop" ]]; then
+        install -Dm644 "$repo_dir/session/villode-files-fm.desktop" \
+            "$HOME/.local/share/applications/villode-files-fm.desktop"
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    fi
+
+    # FileChooser portal backend (browsers/apps Open-Save → QML PortalPicker)
+    if [[ -f "$repo_dir/session/xdg-desktop-portal-villode" ]]; then
+        install -Dm755 "$repo_dir/session/xdg-desktop-portal-villode" \
+            "$HOME/.local/bin/xdg-desktop-portal-villode"
+        if [[ -f "$repo_dir/session/xdg-desktop-portal-villode.service" ]]; then
+            install -Dm644 "$repo_dir/session/xdg-desktop-portal-villode.service" \
+                "$HOME/.config/systemd/user/xdg-desktop-portal-villode.service"
+        fi
+        if [[ -f "$repo_dir/session/org.freedesktop.impl.portal.desktop.villode.service" ]]; then
+            sed "s|@HOME@|$HOME|g" \
+                "$repo_dir/session/org.freedesktop.impl.portal.desktop.villode.service" \
+                >"$HOME/.local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.villode.service"
+        fi
+        if [[ -f "$repo_dir/session/villode.portal" ]]; then
+            install -Dm644 "$repo_dir/session/villode.portal" \
+                "$HOME/.local/share/xdg-desktop-portal/portals/villode.portal"
+        fi
+        if [[ -f "$repo_dir/session/portals.conf.villode" ]]; then
+            local portals_conf="$HOME/.config/xdg-desktop-portal/portals.conf"
+            mkdir -p "$(dirname "$portals_conf")"
+            if [[ ! -f "$portals_conf" ]] || ! grep -q 'FileChooser=villode' "$portals_conf" 2>/dev/null; then
+                # Do not clobber a fully custom portals.conf; only seed when missing
+                # or when FileChooser is not already set to villode.
+                if [[ ! -f "$portals_conf" ]]; then
+                    install -Dm644 "$repo_dir/session/portals.conf.villode" "$portals_conf"
+                else
+                    # Prefer merging FileChooser line when conf exists without villode
+                    if grep -q 'org.freedesktop.impl.portal.FileChooser=' "$portals_conf" 2>/dev/null; then
+                        sed -i 's|^org.freedesktop.impl.portal.FileChooser=.*|org.freedesktop.impl.portal.FileChooser=villode;gtk|' \
+                            "$portals_conf" || true
+                    else
+                        printf '\norg.freedesktop.impl.portal.FileChooser=villode;gtk\n' >>"$portals_conf"
+                    fi
+                fi
+            fi
+        fi
+        systemctl --user daemon-reload 2>/dev/null || true
+        systemctl --user enable --now xdg-desktop-portal-villode.service 2>/dev/null || true
+        systemctl --user restart xdg-desktop-portal.service 2>/dev/null || true
+    fi
+
     install -Dm644 "$manifest" "$data_home/components.tsv"
 }
 

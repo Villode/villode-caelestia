@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Villode Files
+Name[zh_CN]=Villode 文件
+GenericName=File Manager
+GenericName[zh_CN]=文件管理器
+Comment=Villode QML file manager (Caelestia shell)
+Comment[zh_CN]=Villode QML 文件管理器
+Exec=villode-files-fm %U
+TryExec=villode-files-fm
+Icon=system-file-manager
+Terminal=false
+StartupNotify=false
+Categories=System;FileTools;FileManager;Utility;
+MimeType=inode/directory;inode/mount-point;
+Keywords=folder;manager;explore;disk;filesystem;

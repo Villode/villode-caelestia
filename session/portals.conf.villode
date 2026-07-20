@@ -1,0 +1,9 @@
+# Optional preferred FileChooser backend for Villode.
+# Installer writes to ~/.config/xdg-desktop-portal/portals.conf only when missing
+# or still using the stock gtk-only FileChooser line.
+[preferred]
+default=hyprland;gtk
+org.freedesktop.impl.portal.FileChooser=villode;gtk
+org.freedesktop.impl.portal.Screenshot=hyprland
+org.freedesktop.impl.portal.ScreenCast=hyprland
+org.freedesktop.impl.portal.GlobalShortcuts=hyprland

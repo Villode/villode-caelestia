@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Open Villode file manager (shell QML module via IPC).
+# Opt-in default explorer: set general.apps.explorer to ["villode-files-fm"] manually.
+set -euo pipefail
+
+path="${1:-}"
+
+if [[ -n "$path" ]]; then
+  # Resolve to absolute path when possible
+  if command -v realpath >/dev/null 2>&1; then
+    path="$(realpath -m "$path" 2>/dev/null || echo "$path")"
+  fi
+  exec qs -c caelestia ipc call filemanager openPath "$path"
+else
+  exec qs -c caelestia ipc call filemanager open
+fi

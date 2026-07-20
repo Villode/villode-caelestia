@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.villode
+Exec=@HOME@/.local/bin/xdg-desktop-portal-villode
