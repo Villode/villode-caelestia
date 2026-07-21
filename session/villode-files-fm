@@ -1,15 +1,51 @@
 #!/usr/bin/env bash
 # Open Villode file manager (shell QML module via IPC).
 # Opt-in default explorer: set general.apps.explorer to ["villode-files-fm"] manually.
+#
+# Usage:
+#   villode-files-fm                 # open / focus last window (This PC / home flow)
+#   villode-files-fm PATH            # open path in last window
+#   villode-files-fm --new [PATH]    # always new window
+#   villode-files-fm -n [PATH]
 set -euo pipefail
 
-path="${1:-}"
+new=false
+path=""
+
+while (($#)); do
+  case "$1" in
+    --new|-n) new=true ;;
+    -h|--help)
+      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    --) shift; path="${1:-}"; break ;;
+    -*)
+      echo "unknown option: $1" >&2
+      exit 64
+      ;;
+    *)
+      path="$1"
+      ;;
+  esac
+  shift
+done
 
 if [[ -n "$path" ]]; then
-  # Resolve to absolute path when possible
   if command -v realpath >/dev/null 2>&1; then
     path="$(realpath -m "$path" 2>/dev/null || echo "$path")"
   fi
+fi
+
+if $new; then
+  if [[ -n "$path" ]]; then
+    exec qs -c caelestia ipc call filemanager openNew "$path"
+  else
+    exec qs -c caelestia ipc call filemanager openNewHome
+  fi
+fi
+
+if [[ -n "$path" ]]; then
   exec qs -c caelestia ipc call filemanager openPath "$path"
 else
   exec qs -c caelestia ipc call filemanager open
