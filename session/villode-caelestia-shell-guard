@@ -103,8 +103,29 @@ prepare_env() {
     export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-Villode-Hyprland}"
     # Force Wayland first; xcb alone was what crashed shell when DISPLAY was empty.
     export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
-    export LANG="${LANG:-zh_CN.UTF-8}"
-    export LC_ALL="${LC_ALL:-$LANG}"
+    # Villode ships Simplified Chinese UI; C.UTF-8 / en_* leave qsTr untranslated.
+    # Prefer zh_CN unless the user already chose a real non-C locale.
+    case "${LANG:-}" in
+        ""|C|C.*|POSIX|en|en_*)
+            export LANG=zh_CN.UTF-8
+            ;;
+        *)
+            export LANG="${LANG}"
+            ;;
+    esac
+    case "${LC_ALL:-}" in
+        ""|C|C.*|POSIX|en|en_*)
+            export LC_ALL="$LANG"
+            ;;
+        *)
+            export LC_ALL="${LC_ALL}"
+            ;;
+    esac
+    # Villode Caelestia plugin (TranslationManager) lives under ~/.local; system
+    # /usr/lib plugin is older and breaks Chinese UI if it wins the import path.
+    export QML2_IMPORT_PATH="${HOME}/.local/lib/qt6/qml${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+    export CAELESTIA_LIB_DIR="${CAELESTIA_LIB_DIR:-$HOME/.local/lib/caelestia}"
+    export PATH="${CAELESTIA_LIB_DIR}/bin:${PATH}"
     # Avoid crash-loop "not restarting" if previous quickshell left a bad state
     # — we are the outer supervisor.
     export QS_NO_RELOAD_POPUP="${QS_NO_RELOAD_POPUP:-1}"
