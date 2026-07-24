@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""org.freedesktop.FileManager1 → Villode QML file manager.
+
+Apps (QQ, browsers, etc.) call FileManager1 ShowItems/ShowFolders instead of
+xdg-open. Without this service, Thunar claims the bus name.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+from gi.repository import GLib
+
+BUS_NAME = "org.freedesktop.FileManager1"
+OBJ_PATH = "/org/freedesktop/FileManager1"
+IFACE = "org.freedesktop.FileManager1"
+
+FM_BIN = os.environ.get("VILLODE_FILES_FM") or shutil.which("villode-files-fm") or os.path.expanduser(
+    "~/.local/bin/villode-files-fm"
+)
+
+
+def uri_to_path(uri: str) -> str:
+    s = str(uri).strip()
+    if not s:
+        return ""
+    if s.startswith("file://"):
+        parsed = urllib.parse.urlparse(s)
+        return urllib.parse.unquote(parsed.path)
+    if s.startswith("file:"):
+        return urllib.parse.unquote(s[5:])
+    return s
+
+
+def open_paths(paths: list[str], *, select: bool) -> None:
+    """Open folders, or parent folder + select for files."""
+    if not paths:
+        subprocess.Popen([FM_BIN], start_new_session=True)
+        return
+
+    # Prefer first path for navigation; select all files under same parent when possible
+    files: list[str] = []
+    dirs: list[str] = []
+    for p in paths:
+        if not p:
+            continue
+        try:
+            st = Path(p)
+            if st.is_dir():
+                dirs.append(str(st.resolve(strict=False)))
+            elif st.exists() or st.parent.exists():
+                # file (or vanished file still reveal parent)
+                files.append(str(st.resolve(strict=False)) if st.exists() else str(Path(p)))
+            else:
+                # nonexistent: try as path string
+                parent = str(Path(p).parent)
+                if parent and parent != ".":
+                    dirs.append(parent)
+        except OSError:
+            continue
+
+    if files:
+        subprocess.Popen([FM_BIN, "--reveal", files[0]], start_new_session=True)
+        return
+
+    if dirs:
+        subprocess.Popen([FM_BIN, dirs[0]], start_new_session=True)
+        return
+
+    subprocess.Popen([FM_BIN], start_new_session=True)
+
+
+class FileManager1(dbus.service.Object):
+    def __init__(self, bus: dbus.Bus) -> None:
+        self._bus = bus
+        bus_name = dbus.service.BusName(BUS_NAME, bus)
+        super().__init__(bus_name, OBJ_PATH)
+
+    @dbus.service.method(IFACE, in_signature="ass", out_signature="")
+    def ShowFolders(self, uris, startup_id):  # noqa: N802
+        paths = [uri_to_path(u) for u in uris]
+        open_paths(paths, select=False)
+
+    @dbus.service.method(IFACE, in_signature="ass", out_signature="")
+    def ShowItems(self, uris, startup_id):  # noqa: N802
+        paths = [uri_to_path(u) for u in uris]
+        open_paths(paths, select=True)
+
+    @dbus.service.method(IFACE, in_signature="ass", out_signature="")
+    def ShowItemProperties(self, uris, startup_id):  # noqa: N802
+        # No separate properties IPC yet — open parent / item like ShowItems
+        paths = [uri_to_path(u) for u in uris]
+        open_paths(paths, select=True)
+
+
+def main() -> int:
+    if not FM_BIN or not os.path.isfile(FM_BIN):
+        print(f"villode-filemanager1: missing villode-files-fm ({FM_BIN})", file=sys.stderr)
+        return 1
+    # Prefer dbus-python + GLib mainloop (session bus)
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    # If name already owned (e.g. Thunar), fail loudly
+    if bus.name_has_owner(BUS_NAME):
+        print(f"villode-filemanager1: {BUS_NAME} already owned; stop Thunar/other FM first", file=sys.stderr)
+        return 2
+    FileManager1(bus)
+    print(f"villode-filemanager1: owning {BUS_NAME}", flush=True)
+    GLib.MainLoop().run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

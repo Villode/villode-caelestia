@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.FileManager1
+Exec=/home/villode/.local/bin/villode-filemanager1
+SystemdService=villode-filemanager1.service

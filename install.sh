@@ -1333,7 +1333,7 @@ install_release_files() {
             villode-terminal villode-explorer villode-caelestia-shell-guard \
             villode-logout villode-system-update villode-datetime \
             villode-screenshot-editor swappy-villode caelestia-gtk-sync caelestia-qt-sync \
-            villode-files-fm villode-files-fm.desktop \
+            villode-files-fm villode-files-fm.desktop villode-filemanager1 villode-filemanager1.service org.freedesktop.FileManager1.service \
             xdg-desktop-portal-villode xdg-desktop-portal-villode.service \
             org.freedesktop.impl.portal.desktop.villode.service \
             villode.portal portals.conf.villode; do
@@ -1421,6 +1421,22 @@ install_release_files() {
             "$HOME/.local/share/applications/villode-files-fm.desktop"
         update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     fi
+
+    if [[ -f "$repo_dir/session/villode-filemanager1" ]]; then
+        install -Dm755 "$repo_dir/session/villode-filemanager1" "$HOME/.local/bin/villode-filemanager1"
+        if [[ -f "$repo_dir/session/org.freedesktop.FileManager1.service" ]]; then
+            install -Dm644 "$repo_dir/session/org.freedesktop.FileManager1.service" \
+                "$HOME/.local/share/dbus-1/services/org.freedesktop.FileManager1.service"
+        fi
+        if [[ -f "$repo_dir/session/villode-filemanager1.service" ]]; then
+            install -Dm644 "$repo_dir/session/villode-filemanager1.service" \
+                "$HOME/.config/systemd/user/villode-filemanager1.service"
+            systemctl --user daemon-reload 2>/dev/null || true
+            systemctl --user enable --now villode-filemanager1.service 2>/dev/null || true
+        fi
+        systemctl --user stop thunar.service 2>/dev/null || true
+    fi
+
 
     # FileChooser portal backend (browsers/apps Open-Save → QML PortalPicker)
     if [[ -f "$repo_dir/session/xdg-desktop-portal-villode" ]]; then

@@ -3,20 +3,36 @@
 # Opt-in default explorer: set general.apps.explorer to ["villode-files-fm"] manually.
 #
 # Usage:
-#   villode-files-fm                 # open / focus last window (This PC / home flow)
-#   villode-files-fm PATH            # open path in last window
+#   villode-files-fm                 # open home / last window flow
+#   villode-files-fm PATH            # open path (dir or file)
+#   villode-files-fm --reveal FILE   # open parent dir and select FILE
 #   villode-files-fm --new [PATH]    # always new window
 #   villode-files-fm -n [PATH]
 set -euo pipefail
 
 new=false
+reveal=false
 path=""
+extra_select=()
+
+uri_to_path() {
+  local u="$1"
+  if [[ "$u" == file://* ]]; then
+    # python for correct percent-decoding
+    python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(urllib.parse.urlparse(sys.argv[1]).path))' "$u"
+  elif [[ "$u" == file:* ]]; then
+    python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.argv[1][5:]))' "$u"
+  else
+    printf '%s\n' "$u"
+  fi
+}
 
 while (($#)); do
   case "$1" in
     --new|-n) new=true ;;
+    --reveal|-r) reveal=true ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      sed -n '2,14p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     --) shift; path="${1:-}"; break ;;
@@ -25,17 +41,46 @@ while (($#)); do
       exit 64
       ;;
     *)
-      path="$1"
+      if [[ -z "$path" ]]; then
+        path="$1"
+      else
+        extra_select+=("$1")
+      fi
       ;;
   esac
   shift
 done
 
 if [[ -n "$path" ]]; then
+  path="$(uri_to_path "$path")"
   if command -v realpath >/dev/null 2>&1; then
     path="$(realpath -m "$path" 2>/dev/null || echo "$path")"
   fi
 fi
+
+# Normalize extra selects
+sel_args=()
+for s in "${extra_select[@]+"${extra_select[@]}"}"; do
+  s="$(uri_to_path "$s")"
+  if command -v realpath >/dev/null 2>&1; then
+    s="$(realpath -m "$s" 2>/dev/null || echo "$s")"
+  fi
+  sel_args+=("$s")
+done
+
+# If path is a regular file and not --reveal, treat as reveal
+if [[ -n "$path" && -f "$path" ]]; then
+  reveal=true
+fi
+
+if $reveal && [[ -n "$path" ]]; then
+  if $new; then
+    exec qs -c caelestia ipc call filemanager openRevealNew "$path"
+  else
+    exec qs -c caelestia ipc call filemanager openReveal "$path"
+  fi
+fi
+
 
 if $new; then
   if [[ -n "$path" ]]; then
